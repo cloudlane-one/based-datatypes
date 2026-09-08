@@ -1,8 +1,8 @@
-site_name: Based PyProject
+site_name: Based Datatypes
 docs_dir: .
 site_url: !ENV SITE_URL
-repo_url: "https://github.com/cloudlane-one/based-pyproject"
-repo_name: "cloudlane-one/based-pyproject"
+repo_url: "https://github.com/cloudlane-one/based-datatypes"
+repo_name: "cloudlane-one/based-datatypes"
 edit_uri: "-/edit/main/docs/"
 site_dir: ../dist/docs
 use_directory_urls: false
