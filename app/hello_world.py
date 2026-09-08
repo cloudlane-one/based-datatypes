@@ -26,7 +26,7 @@
 # %load_ext rich
 
 # %%
-from based_pyproject.hello_world import Greeter
+from based_datatypes.hello_world import Greeter
 
 # %% [markdown]
 # ## Class instantiation

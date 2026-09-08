@@ -2,10 +2,10 @@
 hide:
 - navigation
 ---
-# Based PyProject Docs
+# Based Datatypes Docs
 
 Welcome! 👋
 
-This repository is intended as a template for quickly setting up modern Python projects including dependency management, linting, docs generation, continuous integration and AI tooling.
+This documentation covers the `based-datatypes` project.
 
-> Please replace this with your own documentation.
+It includes contribution guides, project structure references, and API documentation.

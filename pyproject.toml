@@ -1,6 +1,6 @@
 [project]
-name = "based-pyproject"
-description = "Repository template for a modern Python development project."
+name = "based-datatypes"
+description = "Shared Python data types and related utilities."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.13,<4"
@@ -97,7 +97,7 @@ reportOverlappingOverload = true
 line-length = 100
 
 [tool.deptry]
-known_first_party = ["based_pyproject"]
+known_first_party = ["based_datatypes"]
 non_dev_dependency_groups = ["app"]
 
 [tool.deptry.per_rule_ignores]

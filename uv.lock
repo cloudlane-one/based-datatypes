@@ -155,7 +155,7 @@ wheels = [
 ]
 
 [[package]]
-name = "based-pyproject"
+name = "based-datatypes"
 source = { editable = "." }
 dependencies = [
     { name = "structlog" },
