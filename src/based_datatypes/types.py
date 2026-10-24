@@ -5,6 +5,7 @@ from dataclasses import Field, dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import auto
+from types import UnionType
 from typing import (
     Any,
     ClassVar,
@@ -14,12 +15,14 @@ from typing import (
     Protocol,
     TypeAliasType,
     TypeVar,
+    TypeVarTuple,
     final,
     runtime_checkable,
 )
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
+from typing_extensions import TypeForm
 
 from .enums import StrEnum
 
@@ -42,15 +45,6 @@ class Not(StrEnum):
 
     changed = auto()
     """State in question is not changed."""
-
-
-T = TypeVar("T", covariant=True)
-T_cov = TypeVar("T_cov", covariant=True)
-U_cov = TypeVar("U_cov", covariant=True)
-
-type _AnnotationScanType = type[Any] | TypeAliasType | GenericAlias[
-    Any
-] | NewType | ForwardRef | str
 
 
 T_contra = TypeVar("T_contra", contravariant=True)
@@ -100,7 +94,7 @@ class ArgsPicklableEx(Protocol):
     def __getnewargs_ex__(self) -> tuple: ...  # noqa: D105
 
 
-type Ordinal = (bool | int | float | Decimal | datetime | date | time | timedelta | str)
+type Ordinal = bool | int | float | Decimal | datetime | date | time | timedelta | str
 
 
 T = TypeVar("T", covariant=True)
@@ -109,6 +103,24 @@ U_cov = TypeVar("U_cov", covariant=True)
 
 
 type AnnotationScanType = type[Any] | TypeAliasType | GenericAlias[Any] | NewType | ForwardRef | str
+
+type AnyTypeHint = (
+    TypeForm[object]
+    | SingleTypeDef[Any]
+    | TypeVar
+    | TypeVarTuple
+    | ForwardRef
+    | TypeAliasType
+    | NewType
+    | UnionType
+    | str
+)
+"""Any hint expression the reflection helpers accept.
+
+``TypeForm[object]`` covers classes, named aliases, generics, unions,
+``Literal``, ``Annotated``, ``NewType`` and ``None``; bare type variables and
+unevaluated forward references are runtime-only forms and are added explicitly.
+"""
 
 
 @runtime_checkable
