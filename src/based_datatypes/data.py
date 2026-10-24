@@ -10,6 +10,7 @@ from typing import (
     TypeVar,
     cast,
     get_origin,
+    overload,
     runtime_checkable,
 )
 
@@ -33,15 +34,33 @@ DC = TypeVar("DC", bound=DataclassInstance)
 class MaskedInit[**P, T]:
     """Mask a type constructor with a compatible type."""
 
-    mask: Callable[P, T]
-    constructor: type
+    mask: Callable[P, T] | type[T]
+    constructor: type[T]
 
     def __call__(self, *args: P.args, **kwds: P.kwargs) -> T:  # noqa: D102
-        return self.constructor(*args, **kwds)
+        return cast(Callable[P, T], self.constructor)(*args, **kwds)
+
+
+@overload
+def copy_and_override[DC: DataclassInstance](
+    _init: type[DC],
+    _obj: DataclassInstance | tuple[DataclassInstance, ...],
+    *args: Any,
+    **kwargs: Any,
+) -> DC: ...
+
+
+@overload
+def copy_and_override[**Params, DC: DataclassInstance](
+    _init: Callable[Params, DC] | MaskedInit[Params, DC],
+    _obj: DataclassInstance | tuple[DataclassInstance, ...],
+    *args: Params.args,
+    **kwargs: Params.kwargs,
+) -> DC: ...
 
 
 def copy_and_override[**Params, DC: DataclassInstance](
-    _init: Callable[Params, DC],
+    _init: Callable[Params, DC] | MaskedInit[Params, DC] | type[DC],
     _obj: DataclassInstance | tuple[DataclassInstance, ...],
     *args: Params.args,
     **kwargs: Params.kwargs,
@@ -70,7 +89,7 @@ def copy_and_override[**Params, DC: DataclassInstance](
         assert orig_init is not None
         _init = orig_init
 
-    constr_func = _init or type(_obj)
+    constr_func = cast(Callable[..., DC], _init)
     target_fields = list(fields(cast(type, _init)))
 
     objs = _obj if isinstance(_obj, tuple) else (_obj,)
@@ -143,6 +162,9 @@ def container_to_dict(
             res = {Attr(k): v for k, v in container.model_dump().items()}
         case Mapping():
             res = dict(container)
+        case str() | bytes() | bytearray():
+            # Scalars are iterable, but not containers to be indexed.
+            return None
         case Iterable():
             res = {i: v for i, v in enumerate(container)}
         case _:

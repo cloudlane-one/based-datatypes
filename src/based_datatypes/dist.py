@@ -24,7 +24,7 @@ def get_distributions() -> dict[str, meta.Distribution]:
     for d in meta.distributions():
         try:
             metadata[d.metadata["Name"]] = d
-        except meta.MetadataNotFound:
+        except meta.MetadataNotFound:  # pyright: ignore[reportAttributeAccessIssue]
             continue
 
     return metadata
@@ -39,7 +39,7 @@ def get_module_file(module: ModuleType) -> Path | None:
     )
 
 
-def _file_url_to_path(file_url: str):
+def _file_url_to_path(file_url: str) -> Path:
     # Get the operating system name
     os_name = platform.system()
 
@@ -77,18 +77,24 @@ def get_module_distribution(module: ModuleType) -> meta.Distribution | None:
         Path(str(dist.locate_file(f"{name}"))): dist for name, dist in get_distributions().items()
     }
 
-    mod_dists = []
+    # An editable install resolves to the repository root, which contains the
+    # whole virtual environment; the most specific (deepest) match wins so a
+    # module in ``site-packages`` is attributed to its own distribution.
+    mod_dists: list[tuple[int, meta.Distribution]] = []
     for dist_path, dist in dists.items():
         if mod_file.is_relative_to(dist_path):
-            mod_dists.append(dist)
+            mod_dists.append((len(dist_path.parts), dist))
         elif dist.origin is not None and "url" in dist.origin.__dict__:  # type: ignore
             url = str(dist.origin.url)
             if url.startswith("file://"):
                 path = _file_url_to_path(url)
                 if mod_file.is_relative_to(path):
-                    mod_dists.append(dist)
+                    mod_dists.append((len(path.parts), dist))
 
-    return mod_dists[0] if len(mod_dists) > 0 else None
+    if len(mod_dists) == 0:
+        return None
+
+    return max(mod_dists, key=lambda item: item[0])[1]
 
 
 def get_file_repo(path: Path) -> Repo | None:
@@ -169,7 +175,9 @@ def get_py_inventory(docs_url: str) -> Mapping[str, _InventoryItem]:
         posixpath.join,
     )
     py_inv_dict = reduce(
-        lambda a, b: {**a, **b}, [v for k, v in inv_dict.items() if k.startswith("py:")]
+        lambda a, b: {**a, **b},
+        [v for k, v in inv_dict.items() if k.startswith("py:")],
+        {},
     )
 
     return py_inv_dict

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import functools
-import sys
 from collections.abc import Callable
 from typing import Any, Concatenate, Generic, Literal, Self, TypeVar, cast, overload
 
@@ -20,6 +19,7 @@ class dualmethod[C, **P, T]:  # noqa: N801
     """The underlying function definition."""
 
     def __init__(self, func: Callable[Concatenate[type[C] | C, P], T]):
+        """Wrap the given function."""
         functools.update_wrapper(self, func)  # pyright: ignore[reportArgumentType]
         self.func = func
 
@@ -29,7 +29,9 @@ class dualmethod[C, **P, T]:  # noqa: N801
     @overload
     def __get__(self, instance: C | None, owner: type[C]) -> Callable[P, T]: ...
 
-    def __get__(self, instance: C | None, owner: type[C] | None = None) -> Self | Callable[P, T]:
+    def __get__(  # noqa: D105
+        self, instance: C | None, owner: type[C] | None = None
+    ) -> Self | Callable[P, T]:
         if owner is None:
             return self
 
@@ -74,7 +76,7 @@ type AnySetter[C, T] = Callable[[type[C] | C, T], None] | Callable[[C, T], None]
 type AnyDeleter[C] = Callable[[type[C] | C], None] | Callable[[C], None]
 
 
-class prop(Generic[C, G, M, W]):  # noqa: N801
+class prop(Generic[C, G, M, W]):  # noqa: N801, UP046
     """Modern, flexible and well-typed property descriptor."""
 
     mode: M
@@ -101,7 +103,7 @@ class prop(Generic[C, G, M, W]):  # noqa: N801
     _name: str | None
 
     _cls_cache_dict: dict[type, G]
-    _instance_cache_dict: dict[int, G]
+    _instance_cache_dict: dict[int, tuple[Any, G]]
 
     @property
     def name(self) -> str:
@@ -173,6 +175,7 @@ class prop(Generic[C, G, M, W]):  # noqa: N801
         writable: bool = False,
         deletable: bool = False,
     ) -> None:
+        """Create a property descriptor."""
         self.__isabstractmethod__ = False
 
         self.fget = None
@@ -246,8 +249,7 @@ class prop(Generic[C, G, M, W]):  # noqa: N801
         self.__module__ = fget.__module__
         self.__qualname__ = fget.__qualname__
 
-        if sys.version_info >= (3, 13):
-            self.__name__ = fget.__name__
+        self.__name__ = fget.__name__
 
         return cast(prop[C2, T2, M, W], self)
 
@@ -285,7 +287,7 @@ class prop(Generic[C, G, M, W]):  # noqa: N801
         self.fdel = fdel
         return cast(prop[C, G, M, W], self)
 
-    def __set_name__[C2](self, owner: type[C2], name: str) -> None:
+    def __set_name__[C2](self, owner: type[C2], name: str) -> None:  # noqa: D105
         self._name = name
 
         if self.writable:
@@ -314,7 +316,7 @@ class prop(Generic[C, G, M, W]):  # noqa: N801
         self: prop[C2, Any, Literal["instance"], Read], instance: C2, owner: type[C2]
     ) -> G: ...
 
-    def __get__[C2](  # pyright: ignore[reportIncompatibleMethodOverride]
+    def __get__[C2](  # noqa: D105  # pyright: ignore[reportIncompatibleMethodOverride]
         self: prop[C2, Any, Any, Any],
         instance: C2 | None,
         owner: type[C2] | None = None,
@@ -323,9 +325,13 @@ class prop(Generic[C, G, M, W]):  # noqa: N801
             assert self.fget is not None, "no getter"
             fget = cast(Callable[[C2], G], self.fget)
             if self.cached:
-                if id(instance) not in self._instance_cache_dict:
-                    self._instance_cache_dict[id(instance)] = fget(instance)
-                return self._instance_cache_dict[id(instance)]
+                # The entry keeps the instance alive: keying by ``id`` alone
+                # would return a stale value once CPython reuses the id.
+                cached = self._instance_cache_dict.get(id(instance))
+                if cached is None or cached[0] is not instance:
+                    cached = (instance, fget(instance))
+                    self._instance_cache_dict[id(instance)] = cached
+                return cached[1]
 
             return fget(instance)
         elif self.mode in ("dual", "class") and owner is not None:
@@ -343,7 +349,7 @@ class prop(Generic[C, G, M, W]):  # noqa: N801
 
         return self
 
-    def __set__[C2, T2](
+    def __set__[C2, T2](  # noqa: D105
         self: prop[C2, T2, Literal["instance", "dual"], Write], instance: C2, value: T2
     ) -> None:
         assert self.mode in ("instance", "dual")
@@ -358,7 +364,9 @@ class prop(Generic[C, G, M, W]):  # noqa: N801
             fset = cast(Callable[[C2, T2], None], self.fset)
             fset(instance, value)
 
-    def __delete__[C2](self: prop[C2, Any, Literal["instance", "dual"], Any], instance: C2) -> None:
+    def __delete__[C2](  # noqa: D105
+        self: prop[C2, Any, Literal["instance", "dual"], Any], instance: C2
+    ) -> None:
         assert self.mode in ("instance", "dual")
 
         if self.cached:

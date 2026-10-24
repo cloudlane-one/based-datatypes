@@ -19,7 +19,7 @@ def _get_calling_frame(offset: int = 0):
 
 def get_calling_module(offset: int = 0) -> ModuleType | None:
     """Return the name of the module calling the current function."""
-    return inspect.getmodule(_get_calling_frame(offset + 1).frame)
+    return inspect.getmodule(_get_calling_frame(offset).frame)
 
 
 def get_full_args_dict(
@@ -37,18 +37,21 @@ def get_full_args_dict(
     """
     argspec = inspect.getfullargspec(func)
 
-    arg_defaults = argspec.defaults or []
-    kwdefaults = dict(zip(argspec.args[-len(arg_defaults) :], arg_defaults))
+    posonlyargs = list(getattr(argspec, "posonlyargs", ()))
+    posarg_names = [*posonlyargs, *argspec.args]
 
-    posarg_names = argspec.args
+    arg_defaults = argspec.defaults or []
+    defaulted_names = posarg_names[len(posarg_names) - len(arg_defaults) :]
+    defaults = dict(zip(defaulted_names, arg_defaults))
+    defaults |= dict(argspec.kwonlydefaults or {})
 
     # Handle bound methods
-    if posarg_names[0] == "self" and hasattr(func, "__self__"):
+    if len(posarg_names) > 0 and posarg_names[0] == "self" and hasattr(func, "__self__"):
         posarg_names = posarg_names[1:]
 
     posargs = dict(zip(posarg_names[: len(args)], args))
 
-    return {**kwdefaults, **posargs, **(kwargs or {})}
+    return {**defaults, **posargs, **(kwargs or {})}
 
 
 def get_return_type(func: Callable) -> SingleTypeDef | UnionType | None:
@@ -71,12 +74,11 @@ def get_subclasses[T](cls: type[T], max_level: int | None = None, _level: int = 
     if max_level is not None and _level > max_level:
         return []
 
-    own_subclasses = cls.__subclasses__()
-    return own_subclasses + (
-        [
-            s
-            for c in own_subclasses
-            for s in get_subclasses(c, max_level=max_level, _level=_level + 1)
-            if s not in own_subclasses
-        ]
-    )
+    subclasses = list(dict.fromkeys(cls.__subclasses__()))
+
+    for subclass in cls.__subclasses__():
+        for sub_subclass in get_subclasses(subclass, max_level=max_level, _level=_level + 1):
+            if sub_subclass not in subclasses:
+                subclasses.append(sub_subclass)
+
+    return subclasses
