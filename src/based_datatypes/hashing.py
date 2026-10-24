@@ -108,8 +108,9 @@ def gen_int_hash(_ctx: set[int], obj: Any) -> int:  # noqa: C901
             return _hash_sequence(obj, _ctx)
         case _ if id(obj) in _ctx:
             return 0
-        case pd.DataFrame() | pd.Series() | pd.Index():
-            return sum(hash_pandas_object(obj))
+        case _ if isinstance(obj, pd.DataFrame | pd.Series | pd.Index):
+            # pandas types ``hash_pandas_object`` loosely, hence the ignore.
+            return sum(hash_pandas_object(obj))  # pyright: ignore[reportCallIssue]
         case list():
             _ctx.add(id(obj))
             return _hash_sequence(obj, _ctx)
@@ -125,7 +126,9 @@ def gen_int_hash(_ctx: set[int], obj: Any) -> int:  # noqa: C901
         case DataclassInstance():
             _ctx.add(id(obj))
             return gen_int_hash({f.name: getattr(obj, f.name) for f in fields(obj)})
-        case StatePicklable():
+        # ``object`` has provided ``__getstate__`` since Python 3.11, so the
+        # protocol alone matches every instance; require a custom state hook.
+        case StatePicklable() if type(obj).__getstate__ is not object.__getstate__:
             state = obj.__getstate__()
             state = state if isinstance(state, tuple) else (state,)
             state_dicts = [s for s in state if isinstance(s, dict)]
@@ -160,13 +163,10 @@ def gen_str_hash(x: Any, length: int = 10) -> str:
 
     Args:
         x: Object to hash.
-        length: Length of the hash.
-        raw_str:
-            Whether to use the raw string representation of the object,
-            if it is a string.
+        length: Length of the returned hex string (zero-padded on the left).
 
     Returns:
-        Hash of the object as string.
+        Hash of the object as a hex string.
     """
     s = hex(abs(gen_int_hash(x)))[2:]
     return s[:length].rjust(length, "0")
