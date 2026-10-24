@@ -3,6 +3,7 @@
 import importlib.metadata as meta
 import inspect
 import platform
+import re
 from dataclasses import dataclass
 from functools import cached_property, reduce
 from importlib import import_module
@@ -39,7 +40,9 @@ def get_all_module_dependencies(
     if _ext_deps is None:
         _ext_deps = set()
     if _int_deps is None:
-        _int_deps = set()
+        # Seed with the module itself so a dependency cycle does not report
+        # the entry point as one of its own dependencies.
+        _int_deps = {module}
 
     deps = [dep for _, m in inspect.getmembers(module) if (dep := inspect.getmodule(m)) is not None]
     ext_deps_map = {
@@ -56,13 +59,16 @@ def get_all_module_dependencies(
         _ext_deps |= new_ext_deps
         _int_deps |= new_int_deps
 
-        sub_ext_deps, sub_int_deps = zip(
-            *[get_all_module_dependencies(d, _ext_deps, _int_deps) for d in new_int_deps]
-        )
+        for dependency in new_int_deps:
+            sub_ext_deps, sub_int_deps = get_all_module_dependencies(
+                dependency, _ext_deps, _int_deps
+            )
+            _ext_deps |= sub_ext_deps
+            _int_deps |= sub_int_deps
 
-        return set.union(*sub_ext_deps), set.union(*sub_int_deps)
-    else:
-        return _ext_deps, _int_deps
+        return _ext_deps, _int_deps - {module}
+
+    return _ext_deps, _int_deps - {module}
 
 
 def get_dist_requirements(dist: meta.Distribution) -> list[Requirement] | None:
@@ -207,7 +213,9 @@ def version_to_range(version: Version, strategy: VersionStrategy = "major") -> s
     return (
         f"=={version}"
         if strategy == "exact"
-        else f"~{version}" if strategy == "minor" else f"^{version}"
+        else f"~{version}"
+        if strategy == "minor"
+        else f"^{version}"
     )
 
 
@@ -220,17 +228,23 @@ def semver_range_to_spec(semver_range: str) -> SpecifierSet:
     Returns:
         Corresponding Python version specifier set.
     """
-    op = semver_range[0] if semver_range[0] in "~^>=<" else None
-    version = Version(semver_range.lstrip("^~>=<"))
-    return SpecifierSet(
-        (f">={version.public}" f",<{version.major + 1}")
-        if op == "^"
-        else (
-            (f">={version.public},<{version.major}" f".{version.minor + 1}")
-            if op == "~"
-            else f"{op}{version.public}" if op in list(">=<") else f"=={version.public}"
-        )
-    )
+    match = re.match(r"^(?P<op>\^|~|>=|<=|==|=|>|<)?(?P<version>.+)$", semver_range.strip())
+    if match is None:
+        raise ValueError(f"Invalid semver range: '{semver_range}'.")
+
+    op = match.group("op")
+    version = Version(match.group("version").strip())
+
+    if op == "^":
+        return SpecifierSet(f">={version.public},<{version.major + 1}")
+
+    if op == "~":
+        return SpecifierSet(f">={version.public},<{version.major}.{version.minor + 1}")
+
+    if op in (">=", "<=", ">", "<"):
+        return SpecifierSet(f"{op}{version.public}")
+
+    return SpecifierSet(f"=={version.public}")
 
 
 T = TypeVar("T")
@@ -238,7 +252,7 @@ T2 = TypeVar("T2")
 
 
 @dataclass
-class PyObjectRef(Generic[T]):
+class PyObjectRef(Generic[T]):  # noqa: UP046
     """Reference to a static Python object."""
 
     object_type: type[T]
@@ -251,7 +265,10 @@ class PyObjectRef(Generic[T]):
     """Name of the module the object belongs to."""
 
     repo_url: str | None = None
-    """URL of the Git repo or index where the package is hosted. If None, the object is a built-in key."""
+    """URL of the Git repo or index where the package is hosted.
+
+    If ``None``, the object is a built-in key.
+    """
 
     version: str | None = None
     """
@@ -288,7 +305,7 @@ class PyObjectRef(Generic[T]):
         Returns:
             Reference to the given object.
         """
-        qualname = getattr(obj, "__qualname__")
+        qualname = getattr(obj, "__qualname__", None)
         if qualname is None:
             raise ValueError("Object must have fully qualified name (`__qualname__`)")
 
@@ -381,11 +398,23 @@ class PyObjectRef(Generic[T]):
 
         repo_url = None
         if url.scheme.startswith("py+"):
+            # Version and Python constraints are carried as query parameters,
+            # so they must not leak into the repository URL.
             repo_url = str(
-                url.with_scheme(url.scheme[3:]).without_query_params().with_fragment(None)
+                URL.build(
+                    scheme=url.scheme[3:],
+                    host=url.host or "",
+                    port=url.port,
+                    path=url.path,
+                )
             )
 
-        module, object = url.fragment.split(":")  # Split module and object
+        if ":" not in url.fragment:
+            raise ValueError(
+                f"URL fragment must be of the form '<module>:<qualname>', got '{url.fragment}'."
+            )
+
+        module, object = url.fragment.split(":", 1)  # Split module and object
 
         return PyObjectRef(
             object_type=obj_type,
@@ -426,8 +455,7 @@ class PyObjectRef(Generic[T]):
                 self.version
             ):
                 raise ImportError(
-                    f"Please install correct version of repo '{self.repo_url}': "
-                    f"'{self.version}'"
+                    f"Please install correct version of repo '{self.repo_url}': '{self.version}'"
                 )
 
             self._dist = dist
@@ -454,7 +482,7 @@ class PyObjectRef(Generic[T]):
             if obj_inv is not None:
                 obj_inv_key = f"{self.module_name}.{self.qualname}"
                 if obj_inv_key in obj_inv:
-                    docs_url = str(obj_inv[obj_inv_key][2])
+                    docs_url = str(obj_inv[obj_inv_key].uri)
 
         if docs_url is None:
             api_urls = get_project_urls(self.dist, "API Reference")
@@ -474,9 +502,12 @@ class PyObjectRef(Generic[T]):
     def object(self) -> T:
         """Resolved object."""
         if self._object is None:
-            url: str | None = (
-                dict(self.dist.origin.__dict__).get("url") if self.dist.origin is not None else None
-            )
+            # Built-in objects have no distribution to verify against.
+            url: str | None = None
+            if self.repo_url is not None:
+                origin = self.dist.origin
+                url = dict(origin.__dict__).get("url") if origin is not None else None
+
             if url is not None:
                 if str(url).startswith("file://"):
                     repo = get_module_repo(self.module)
@@ -484,7 +515,8 @@ class PyObjectRef(Generic[T]):
                         url = repo.remote().url
                 if url != self.repo_url:
                     raise ImportError(
-                        f"Expected module '{self.module_name}' to be from '{self.repo_url}' but is from '{url}'."
+                        f"Expected module '{self.module_name}' to be from "
+                        f"'{self.repo_url}' but is from '{url}'."
                     )
 
             obj = reduce(getattr, self.qualname.split("."), self.module)
@@ -502,24 +534,22 @@ class PyObjectRef(Generic[T]):
     def url(self) -> URL:
         """URL representation of this reference."""
         repo_url = URL(self.repo_url) if self.repo_url is not None else None
-        return (
-            (
-                URL().with_scheme("py")
-                if repo_url is None
-                else URL()
-                .with_scheme(f"py+{repo_url.scheme}")
-                .with_host(repo_url.host if repo_url.host is not None else "")
-                .with_port(repo_url.port)
-                .with_path(repo_url.path)
+        url = (
+            URL().with_scheme("py")
+            if repo_url is None
+            else URL.build(
+                scheme=f"py+{repo_url.scheme}",
+                host=repo_url.host or "",
+                port=repo_url.explicit_port,
+                path=repo_url.path,
             )
-            .with_query(
-                {
-                    **({"version": self.version} if self.version is not None else {}),
-                    **({"python": self.py_version} if self.py_version is not None else {}),
-                }
-            )
-            .with_fragment(f"{self.module_name}:{self.qualname}")
         )
+        return url.with_query(
+            {
+                **({"version": self.version} if self.version is not None else {}),
+                **({"python": self.py_version} if self.py_version is not None else {}),
+            }
+        ).with_fragment(f"{self.module_name}:{self.qualname}")
 
 
 def stref(obj: Any) -> str:
