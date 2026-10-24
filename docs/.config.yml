@@ -3,13 +3,24 @@ docs_dir: .
 site_url: !ENV SITE_URL
 repo_url: "https://github.com/cloudlane-one/based-datatypes"
 repo_name: "cloudlane-one/based-datatypes"
-edit_uri: "-/edit/main/docs/"
+edit_uri: "edit/main/docs/"
 site_dir: ../dist/docs
 use_directory_urls: false
 dev_addr: 127.0.0.1:9000
 
 nav:
   - Home: index.md
+  - Usage:
+      - Enums: how-to-enums.md
+      - Types and protocols: how-to-types.md
+      - Context variables: how-to-context.md
+      - Runtime reflection: how-to-runtime.md
+      - Type reflection: how-to-typing.md
+      - Hashing: how-to-hashing.md
+      - Data utilities: how-to-data.md
+      - Descriptors: how-to-descriptors.md
+      - Object references: how-to-refs.md
+      - Distributions: how-to-dist.md
   - Development:
       - how-to-contribute.md
       - how-to-setup-locally.md
