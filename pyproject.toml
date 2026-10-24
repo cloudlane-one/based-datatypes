@@ -10,9 +10,10 @@ dependencies = [
     "packaging>=26.3,<27.0",
     "pandas>=3.1.0,<4.0.0",
     "pydantic>=2.13.5,<3.0.0",
+    "pydantic-core>=2.46.5,<3.0.0",
     "requests>=2.34.2,<3.0.0",
     "sphinx>=9.2.0,<10.0.0",
-    "structlog>=26.1.0,<27.0.0",
+    "typing-extensions>=4.15,<5.0.0",
     "yarl>=1.25.1,<2.0.0",
 ]
 dynamic = ["version"]
@@ -25,7 +26,7 @@ build-backend = "hatchling.build"
 # Everything needed in CI/CD pipelines, which includes all dev dependencies + release tooling.
 ci = [
     { include-group = "dev" },
-    "pyright[nodejs]>=1.1.409,<2.0.0",
+    "pyright[nodejs]>=1.1.414,<2.0.0",
     "python-semantic-release>=10.6.2,<11.0.0",
 ]
 # Linting, testing, documentation, and application tools; Installed per default by uv in development environments.
@@ -111,6 +112,7 @@ known_first_party = ["based_datatypes"]
 non_dev_dependency_groups = ["app"]
 
 [tool.deptry.per_rule_ignores]
+DEP001 = ["polars"]
 DEP002 = ["ipykernel", "jupyter", "jupytext", "rich"]
 
 [tool.pytest.ini_options]
