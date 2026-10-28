@@ -8,19 +8,7 @@ from collections.abc import Collection, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from types import UnionType
-from typing import (
-    Any,
-    Generic,
-    Protocol,
-    TypeAliasType,
-    TypeVar,
-    Union,
-    cast,
-    get_args,
-    get_origin,
-    runtime_checkable,
-)
+from typing import Any, Generic, Protocol, TypeVar, cast, runtime_checkable
 
 import polars as pl
 from typing_extensions import TypeForm
@@ -231,17 +219,7 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
         t = cls.typeargs[T]
         assert not isinstance(t, tuple)
 
-        typedef = t.typedef
-        if isinstance(typedef, TypeAliasType):
-            typedef = typedef.__value__
-
-        hints = (
-            get_args(typedef)
-            if isinstance(typedef, UnionType) or get_origin(typedef) is Union
-            else (typedef,)
-        )
-
-        return TransportTypes(cast(tuple[SingleTypeDef[T], ...], tuple(hints)))
+        return TransportTypes(cast(tuple[SingleTypeDef[T], ...], t.members))
 
     @classmethod
     @abstractmethod

@@ -202,6 +202,24 @@ def test_is_type_hint_accepts_hints() -> None:
     assert bt.is_type_hint(Annotated[int, "meta"])
 
 
+def test_members_of_a_union_keep_declaration_order() -> None:
+    """A union reference yields its members in declaration order."""
+    assert TypeRef(int | str).members == (int, str)
+    assert TypeRef(typing.Union[int, None]).members == (int, type(None))  # noqa: UP007
+
+
+def test_members_resolve_a_named_alias() -> None:
+    """A named alias is resolved before splitting."""
+    assert TypeRef(AliasUnion).members == (int, str)
+    assert TypeRef(AliasInt).members == (int,)
+
+
+def test_members_keep_a_parameterized_hint_whole() -> None:
+    """A non-union hint is returned as-is, arguments intact."""
+    assert TypeRef(list[int]).members == (list[int],)
+    assert TypeRef(int).members == (int,)
+
+
 def test_is_type_hint_rejects_values() -> None:
     """Instances and plain values are not type hints."""
     assert not bt.is_type_hint(1)

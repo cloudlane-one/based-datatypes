@@ -27,7 +27,7 @@ print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 
 | Name | Purpose |
 | --- | --- |
-| `TypeRef(hint, ...)` | Resolved reference to a hint: origin, arguments, parameters, typeform, type-variable map, validation. |
+| `TypeRef(hint, ...)` | Resolved reference to a hint: origin, arguments, parameters, union `members`, typeform, type-variable map, validation. |
 | `TypeAwareClass` | Base class whose subclasses remember the arguments they were parameterised with. |
 | `typedef_to_typeset(typedef)` | The set of concrete classes a hint can produce (`int \| None` → `{int, NoneType}`). |
 | `is_subtype(type_, supertype)` | Subtyping test over generic and special-form hints. |

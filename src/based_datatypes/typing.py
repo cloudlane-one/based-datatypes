@@ -638,6 +638,22 @@ class TypeRef(Generic[T]):  # noqa: UP046
         )
 
     @cached_property
+    def members(self) -> tuple[AnyTypeHint, ...]:
+        """Union members of the type reference, or the type itself if it is not a union.
+
+        A named alias is resolved first, and the members keep their declaration
+        order and any type arguments.
+        """
+        typedef = self.typedef
+        if isinstance(typedef, TypeAliasType):
+            typedef = typedef.__value__
+
+        if isinstance(typedef, UnionType) or get_origin(typedef) is Union:
+            return get_args(typedef)
+
+        return (typedef,)
+
+    @cached_property
     def annotation(self) -> Any | None:
         """The dynamic annotation supplied via ``typing.Annotated``."""
         if self.origin is Annotated:
