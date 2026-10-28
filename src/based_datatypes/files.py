@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import shutil
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cached_property
-from itertools import groupby
 from mimetypes import guess_extension, guess_type
 from pathlib import Path
 from typing import (
@@ -22,10 +22,13 @@ from typing import (
     overload,
 )
 
-from identify.identify import tags_from_path
+from identify.identify import tags_from_filename, tags_from_path
+
+from based_datatypes.types import SingleTypeDef
+from based_datatypes.typing import TypeRef, is_subtype
 
 
-def ensure_dir_exists(path: Path | str):
+def ensure_dir_exists(path: Path | str) -> Path:
     """Make sure the given path exists and is a directory.
 
     Create dir if necessary. Then return the path unchanged.
@@ -50,17 +53,20 @@ def ensure_dir_exists(path: Path | str):
 
 
 additional_mime = {
+    ".csv": "text/csv",
     ".yaml": "application/yaml",
     ".yml": "application/yaml",
     ".parquet": "application/vnd.apache.parquet",
     ".xlsx": "application/vnd.ms-excel",
+    ".xls": "application/vnd.ms-excel",
     ".npy": "application/x-npy",
     ".pkl": "application/pickle",
+    ".npz": "application/x-npz",
+    ".sql": "application/sql",
 }
-additional_mime_inv = {
-    g: [k for k, _ in g_items]
-    for g, g_items in groupby(additional_mime.items(), key=lambda x: x[1])
-}
+additional_mime_inv: dict[str, list[str]] = {}
+for _extension, _mime in additional_mime.items():
+    additional_mime_inv.setdefault(_mime, []).append(_extension)
 
 M = TypeVar("M", bound=LiteralString | str, covariant=True)
 
@@ -78,15 +84,21 @@ class File(ABC, Generic[M, I]):
     mime: M
     io_type: type[I]
 
+    _suffix: str | None = None
+    """Explicit file suffix; ``None`` derives it from the MIME type."""
+
     @cached_property
     def extension(self) -> str:
-        """Return the file extension based on the MIME type."""
-        ext = guess_extension(self.mime, strict=False)
+        """Return the file extension, from the suffix or the MIME type."""
+        if self._suffix is not None:
+            return self._suffix
+
+        ext = additional_mime_inv.get(self.mime, [None])[0]
         if ext is None:
-            ext = additional_mime_inv.get(self.mime, [None])[0]
+            ext = guess_extension(self.mime, strict=False)
 
         if ext is None:
-            ext = ".txt" if self.io_type == "text" else ".bin"
+            ext = ".txt" if issubclass(self.io_type, TextIO) else ".bin"
 
         assert ext is not None, "Could not determine file extension"
         return ext
@@ -121,11 +133,22 @@ class File(ABC, Generic[M, I]):
     @contextmanager
     def open(self, mode: Literal["rw", "r", "w"] = "rw") -> Generator[TextIO | BinaryIO]:
         """Open the file and return its IO stream."""
-        io = self.get_io()
+        io = self.get_io(mode)
         try:
             yield io
         finally:
             io.close()
+
+    def match(self, hint: SingleTypeDef[Any]) -> bool:
+        """Check whether a declared transport hint accepts the given target."""
+        ref = TypeRef(hint)
+        if not is_subtype(ref.typeform, File):
+            return False
+
+        mime_ref, io_ref = TypeRef(hint).arg_typerefs
+        return (
+            len(mime_ref.literal_values) == 0 or self.mime in mime_ref.literal_values
+        ) and is_subtype(self.io_type, io_ref.typeform)
 
 
 @dataclass
@@ -142,11 +165,23 @@ class LocalFile(File[M, TextIO | BinaryIO]):
 
         dir_path = path.parent
         name = path.stem
-        mime = guess_type(path)[0] or "application/octet-stream"
-        tags = tags_from_path(str(path))
+        # ``additional_mime`` covers the formats ``mimetypes`` cannot name
+        # (parquet, npy, pickle, ...), so it takes precedence.
+        mime = (
+            additional_mime.get(path.suffix.lower())
+            or guess_type(path)[0]
+            or "application/octet-stream"
+        )
+        tags = tags_from_path(str(path)) if path.exists() else tags_from_filename(str(path))
         io_type = TextIO if "text" in tags else BinaryIO
 
-        return LocalFile(dir=LocalDir(path=dir_path), name=name, mime=mime, io_type=io_type)
+        return LocalFile(
+            dir=LocalDir(path=dir_path),
+            name=name,
+            mime=mime,
+            io_type=io_type,
+            _suffix=path.suffix,
+        )
 
     @cached_property
     def path(self) -> Path:
@@ -157,6 +192,9 @@ class LocalFile(File[M, TextIO | BinaryIO]):
     def detected_format(self) -> Literal["text", "binary"]:
         """Default encoding based on filename and content."""
         path = Path(self.path)
+        if not path.exists():
+            return "text" if issubclass(self.io_type, TextIO) else "binary"
+
         file_tags = tags_from_path(str(path))
         return "text" if "text" in file_tags else "binary"
 
@@ -289,9 +327,7 @@ class LocalDir(Dir[LocalFile, "LocalDir"]):
         if item_path.is_file():
             item_path.unlink()
         elif item_path.is_dir():
-            item_dir = LocalDir(path=item_path)
-            for name in item_dir.keys():
-                del item_dir[name]
+            shutil.rmtree(item_path)
         else:
             raise KeyError(f"Item '{key}' not found in directory '{self.abs_path}'.")
 

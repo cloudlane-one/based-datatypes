@@ -447,7 +447,9 @@ def _substitute_typevars(
 class TypeRef(Generic[T]):  # noqa: UP046
     """Reference to a typeform."""
 
-    hint: TypeForm[T] | TypeVar | ExtTypeVar | ForwardRef | str = cast(type[T], object)
+    hint: TypeForm[T] | SingleTypeDef[T] | TypeVar | ExtTypeVar | ForwardRef | str = cast(
+        type[T], object
+    )
     """Type hint."""
 
     ctx_module: ModuleType | None = None
@@ -624,8 +626,33 @@ class TypeRef(Generic[T]):  # noqa: UP046
 
     @cached_property
     def literal_values(self) -> tuple[str | int | float | bool | Enum, ...]:
-        """Values of a ``Literal`` type hint."""
-        return self.args if self.origin is Literal else ()
+        """Distinct literal values, recursively resolving aliases and unions.
+
+        Values retain declaration order and are deduplicated by both type and
+        value. Non-literal union members contribute no values.
+        """
+        pending = [self.typedef]
+        seen: set[int] = set()
+        values: dict[tuple[type, Any], str | int | float | bool | Enum] = {}
+
+        while pending:
+            hint = pending.pop()
+            if id(hint) in seen:
+                continue
+            seen.add(id(hint))
+
+            if isinstance(hint, TypeAliasType):
+                pending.append(hint.__value__)
+                continue
+
+            origin = get_origin(hint)
+            if origin is Union or origin is UnionType:
+                pending.extend(reversed(get_args(hint)))
+            elif origin is Literal:
+                for value in get_args(hint):
+                    values.setdefault((type(value), value), value)
+
+        return tuple(values.values())
 
     @property
     def single_typedef(self) -> SingleTypeDef[T]:
@@ -836,7 +863,7 @@ class TypeRef(Generic[T]):  # noqa: UP046
         }
 
     @cached_property
-    def typeform(self) -> SingleTypeDef[T] | UnionType | Annotated:
+    def typeform(self) -> TypeForm[T]:
         """Resolved type definition with arguments recursively resolved."""
         return cast(Any, _substitute_typevars(self.typedef, self.scalar_typevar_map))
 

@@ -4,15 +4,14 @@ import typing
 from collections.abc import Callable, Sequence
 from decimal import Decimal
 from types import ModuleType
-from typing import Any, Annotated, ForwardRef, Literal, TypeVar, get_args
+from typing import Annotated, Any, ForwardRef, Literal, TypeVar, get_args
 
 import pydantic
 import pytest
 from beartype.roar import BeartypeDoorNonpepException
 
 from based_datatypes import typing as bt
-from based_datatypes.typing import TypeRef, TypeAwareClass
-
+from based_datatypes.typing import TypeAwareClass, TypeRef
 
 T = TypeVar("T")
 T_bound = TypeVar("T_bound", bound=int)
@@ -23,6 +22,11 @@ type AliasList = list[int]
 type AliasUnion = int | str
 type AliasGeneric[T] = list[T]
 type MaybeInt = int | None
+
+type LiteralAlias = Literal["a", 1]
+type NestedLiteralAlias = LiteralAlias
+type LiteralUnionAlias = NestedLiteralAlias | Literal["b", 2]
+type RecursiveLiteralAlias = Literal["a"] | list[RecursiveLiteralAlias]
 
 K = TypeVar("K")
 V = TypeVar("V")
@@ -108,7 +112,10 @@ def test_typedef_to_typeset_of_a_parameterised_alias() -> None:
 
 def test_typedef_to_typeset_of_a_union_containing_an_alias() -> None:
     """Aliases nested inside a union are flattened."""
-    assert bt.typedef_to_typeset(AliasInt | None) == {int, bt.NoneType}  # pyright: ignore[reportArgumentType]
+    assert bt.typedef_to_typeset(AliasInt | None) == {  # pyright: ignore[reportArgumentType]
+        int,
+        bt.NoneType,
+    }
 
 
 def test_typedef_to_typeset_of_a_forward_ref() -> None:
@@ -264,8 +271,13 @@ def test_set_typeargs_positionally() -> None:
 
 def test_set_typeargs_by_typevar() -> None:
     """A mapping replaces the selected type variable."""
-    assert bt.set_typeargs(list[T], {T: str}) == list[str]  # pyright: ignore[reportGeneralTypeIssues]
-    assert bt.set_typeargs(Pair[K, V], {V: int}) == Pair[K, int]  # pyright: ignore[reportGeneralTypeIssues]
+    assert (
+        bt.set_typeargs(list[T], {T: str}) == list[str]  # pyright: ignore[reportGeneralTypeIssues]
+    )
+    assert (
+        bt.set_typeargs(Pair[K, V], {V: int})  # pyright: ignore[reportGeneralTypeIssues]
+        == Pair[K, int]  # pyright: ignore[reportGeneralTypeIssues]
+    )
 
 
 def test_set_typeargs_rejects_non_generic_hints() -> None:
@@ -283,7 +295,9 @@ def test_set_typeargs_rejects_an_empty_argument_list() -> None:
 def test_set_typeargs_rejects_an_unknown_typevar() -> None:
     """A type variable the hint does not use is refused."""
     with pytest.raises(ValueError, match="not a parameter"):
-        bt.set_typeargs(list[T], {TypeVar("Other"): int})  # pyright: ignore[reportGeneralTypeIssues]
+        bt.set_typeargs(
+            list[T], {TypeVar("Other"): int}  # pyright: ignore[reportGeneralTypeIssues]
+        )
 
 
 def test_get_typeargs_of_a_non_generic_instance() -> None:
@@ -410,10 +424,14 @@ def test_typeref_typeform_round_trips_a_typeref_aware_class() -> None:
 def test_typeref_typeform_substitutes_typevars() -> None:
     """A free type variable is replaced in the resolved typeform."""
     assert (
-        TypeRef(list[T], subs={T: TypeRef(int)}).typeform == list[int]  # pyright: ignore[reportGeneralTypeIssues]
+        TypeRef(
+            list[T], subs={T: TypeRef(int)}  # pyright: ignore[reportGeneralTypeIssues]
+        ).typeform
+        == list[int]
     )
     assert (
-        TypeRef(Box[T], subs={T: TypeRef(int)}).typeform == Box[int]  # pyright: ignore[reportGeneralTypeIssues]
+        TypeRef(Box[T], subs={T: TypeRef(int)}).typeform  # pyright: ignore[reportGeneralTypeIssues]
+        == Box[int]
     )
 
 
@@ -501,6 +519,35 @@ def test_typeref_annotation_and_literal_values() -> None:
     assert TypeRef(int).annotation is None
     assert TypeRef(Literal["a", 1]).literal_values == ("a", 1)
     assert TypeRef(int).literal_values == ()
+
+
+@pytest.mark.parametrize(
+    ("hint", "expected"),
+    [
+        (LiteralAlias, ("a", 1)),
+        (NestedLiteralAlias, ("a", 1)),
+        (LiteralUnionAlias, ("a", 1, "b", 2)),
+        (Literal["a", 1] | Literal["b", 2], ("a", 1, "b", 2)),
+        (typing.Union[Literal["a"], Literal["b"]], ("a", "b")),  # noqa: UP007
+        (LiteralUnionAlias | Literal["c"], ("a", 1, "b", 2, "c")),
+        (LiteralAlias | NestedLiteralAlias, ("a", 1)),
+        (LiteralAlias | Literal["a", "b"], ("a", 1, "b")),
+        (Literal[1] | Literal[True], (1, True)),
+        (LiteralAlias | int | None, ("a", 1)),
+        (AliasInt, ()),
+        (AliasUnion, ()),
+        (list[Literal["a"]], ()),
+        (RecursiveLiteralAlias, ("a",)),
+    ],
+)
+def test_typeref_literal_values_resolves_aliases_and_unions(
+    hint: Any, expected: tuple[Any, ...]
+) -> None:
+    """Aliases and unions expose distinct literal values in declaration order."""
+    values = TypeRef(hint).literal_values
+
+    assert values == expected
+    assert tuple(type(value) for value in values) == tuple(type(value) for value in expected)
 
 
 def test_typeref_arg_typerefs() -> None:

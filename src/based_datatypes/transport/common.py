@@ -34,9 +34,9 @@ type StrScalar = str | int | float | complex | bool | None
 type Stringifiable = StrScalar | list[StrScalar]
 
 
-type JSONFile = File[Literal["application/yaml"], TextIO] | File[
-    Literal["application/json"], TextIO
-]
+type JSONFile = (
+    File[Literal["application/yaml"], TextIO] | File[Literal["application/json"], TextIO]
+)
 JF = TypeVar(
     "JF",
     bound=JSONFile,
@@ -73,7 +73,7 @@ class JSONTransporter(TransportDriver[JSONDict, JSONFile]):
 
         with source.open("r") as f:
             if source.mime == "application/yaml":
-                dct = yaml.load(f, Loader=yaml.CLoader)
+                dct = yaml.load(f, Loader=yaml.CSafeLoader)
             else:
                 dct = json.load(f)
 
@@ -90,7 +90,7 @@ class JSONTransporter(TransportDriver[JSONDict, JSONFile]):
         """Convert a dictionary to a JSON or YAML file."""
         with target.open("w") as f:
             if target.mime == "application/yaml":
-                yaml.dump(instance, allow_unicode=True, stream=f)
+                yaml.safe_dump(instance, allow_unicode=True, stream=f)
             else:
                 f.write(json.dumps(instance, indent=2))
 
@@ -139,7 +139,7 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
         """Convert an XML ElementTree to a file."""
         assert target.mime in {"application/xml", "text/xml"}
         with target.open("w") as f:
-            instance.write(f)
+            instance.write(f, encoding="unicode")
 
 
 common_drivers[xml.ElementTree] = XMLTransporter
@@ -162,14 +162,13 @@ try:
             """Parse a Pydantic model from a JSON or YAML file."""
             with source.open("r") as f:
                 if source.mime == "application/yaml":
-                    data = yaml.load(f, Loader=yaml.CLoader)
+                    data = yaml.load(f, Loader=yaml.CSafeLoader)
                 else:
                     data = json.load(f)
 
-            if annotation is None or not has_type(data, annotation):
-                raise ValueError(f"Data does not match expected type: {annotation}")
+            if annotation is None:
+                raise ValueError("Annotation must be provided for Pydantic model parsing.")
 
-            assert annotation is not None, "Annotation must be provided for Pydantic model parsing."
             adapter = pyd.TypeAdapter(annotation)
             return adapter.validate_python(data)
 
@@ -184,7 +183,7 @@ try:
             """Convert a Pydantic model to a JSON or YAML file."""
             with target.open("w") as f:
                 if target.mime == "application/yaml":
-                    yaml.dump(instance.model_dump(), allow_unicode=True, stream=f)
+                    yaml.safe_dump(instance.model_dump(), allow_unicode=True, stream=f)
                 else:
                     json.dump(instance.model_dump(), f, indent=2)
 
@@ -194,9 +193,10 @@ except ImportError:
 
 # DataFrames
 
-type DfFile = File[
-    Literal["application/vnd.ms-excel", "application/vnd.apache.parquet"], BinaryIO
-] | File[Literal["text/csv"], TextIO]
+type DfFile = (
+    File[Literal["application/vnd.ms-excel", "application/vnd.apache.parquet"], BinaryIO]
+    | File[Literal["text/csv"], TextIO]
+)
 
 
 # Pandas
@@ -218,7 +218,7 @@ try:
                 if source.mime == "text/csv":
                     res = pd.read_csv(f)
                 elif source.mime == "application/vnd.apache.parquet":
-                    assert isinstance(f, BinaryIO), "Parquet file must be binary."
+                    f = cast(BinaryIO, f)
                     res = pd.read_parquet(f)
                 elif source.mime == "application/vnd.ms-excel":
                     res = pd.read_excel(f)
@@ -240,10 +240,10 @@ try:
                 if target.mime == "text/csv":
                     instance.to_csv(f, index=False)
                 elif target.mime == "application/vnd.apache.parquet":
-                    assert isinstance(f, BinaryIO)
+                    f = cast(BinaryIO, f)
                     instance.to_parquet(f)
                 elif target.mime == "application/vnd.ms-excel":
-                    assert isinstance(f, BinaryIO)
+                    f = cast(BinaryIO, f)
                     instance.to_excel(f, index=False)
                 else:
                     raise ValueError(f"Unsupported MIME type: {target.mime}")
@@ -270,10 +270,10 @@ class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
             if source.mime == "text/csv":
                 res = pl.read_csv(f)
             elif source.mime == "application/vnd.apache.parquet":
-                assert isinstance(f, BinaryIO), "Parquet file must be binary."
+                f = cast(BinaryIO, f)
                 res = pl.read_parquet(f)
             elif source.mime == "application/vnd.ms-excel":
-                assert isinstance(f, BinaryIO), "Excel file must be binary."
+                f = cast(BinaryIO, f)
                 res = pl.read_excel(f)
             else:
                 raise ValueError(f"Unsupported MIME type: {source.mime}")
@@ -293,10 +293,10 @@ class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
             if target.mime == "text/csv":
                 instance.write_csv(f)
             elif target.mime == "application/vnd.apache.parquet":
-                assert isinstance(f, BinaryIO)
+                f = cast(BinaryIO, f)
                 instance.write_parquet(f)
             elif target.mime == "application/vnd.ms-excel":
-                assert isinstance(f, BinaryIO)
+                f = cast(BinaryIO, f)
                 instance.write_excel(f)
             else:
                 raise ValueError(f"Unsupported MIME type: {target.mime}")
@@ -309,9 +309,10 @@ common_drivers[pl.DataFrame] = PlTransporter
 try:
     import numpy as np
 
-    type NpFile = File[Literal["application/x-npy", "application/x-npz"], BinaryIO] | File[
-        Literal["text/csv"], TextIO
-    ]
+    type NpFile = (
+        File[Literal["application/x-npy", "application/x-npz"], BinaryIO]
+        | File[Literal["text/csv"], TextIO]
+    )
 
     class NpTransporter(TransportDriver[np.ndarray, NpFile]):
         """Transporter for NumPy arrays."""
@@ -326,10 +327,10 @@ try:
             """Parse a NumPy array from a file."""
             with source.open("r") as f:
                 if source.mime == "application/x-npy":
-                    assert isinstance(f, BinaryIO), "Numpy file must be binary."
+                    f = cast(BinaryIO, f)
                     res = np.load(f)
                 elif source.mime == "application/x-npz":
-                    assert isinstance(f, BinaryIO), "Numpy file must be binary."
+                    f = cast(BinaryIO, f)
                     res = np.load(f)["arr_0"]
                 elif source.mime == "text/csv":
                     res = np.loadtxt(f, delimiter=",")
@@ -349,10 +350,10 @@ try:
             """Convert a NumPy array to a file."""
             with target.open("w") as f:
                 if target.mime == "application/x-npy":
-                    assert isinstance(f, BinaryIO), "Numpy file must be binary."
+                    f = cast(BinaryIO, f)
                     np.save(f, instance)
                 elif target.mime == "application/x-npz":
-                    assert isinstance(f, BinaryIO), "Numpy file must be binary."
+                    f = cast(BinaryIO, f)
                     np.savez(f, arr_0=instance)
                 elif target.mime == "text/csv":
                     np.savetxt(f, instance, delimiter=",")
@@ -400,15 +401,12 @@ try:
             if isinstance(instance, sqla.Executable):
                 instance = [instance]
 
+            formatted = [
+                sqlparse.format(str(stmt), reindent=True, keyword_case="upper") for stmt in instance
+            ]
+
             with target.open("w") as f:
-                for stmt in instance:
-                    f.write(
-                        sqlparse.format(
-                            str(stmt),
-                            reindent=True,
-                            keyword_case="upper",
-                        )
-                    )
+                f.write(";\n\n".join(formatted))
 
     common_drivers[sqla.Executable | Iterable[sqla.Executable]] = SQLTransporter
 except ImportError:
@@ -458,8 +456,14 @@ try:
             annotation: SingleTypeDef[Image.Image] | None = None,
         ) -> None:
             """Convert an image to a file."""
+            image_format = instance.format or Image.registered_extensions().get(
+                target.extension.lower()
+            )
+            if image_format is None:
+                raise ValueError(f"Unsupported image MIME type: {target.mime}")
+
             with target.open("w") as f:
-                instance.save(f, format=instance.format)
+                instance.save(f, format=image_format)
 
     common_drivers[Image.Image] = ImageTransporter
 

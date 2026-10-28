@@ -3,16 +3,29 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Sequence, Set
+from collections.abc import Collection, Generator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import InitVar, dataclass
+from dataclasses import dataclass
 from types import UnionType
-from typing import Any, Generic, Protocol, TypeVar, runtime_checkable
+from typing import (
+    Any,
+    Generic,
+    Protocol,
+    TypeAliasType,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+    runtime_checkable,
+)
 
 import polars as pl
+from typing_extensions import TypeForm
 
 from based_datatypes.descriptors import cached_method
+from based_datatypes.files import File
 from based_datatypes.typing import SingleTypeDef, TypeAwareClass, is_subtype
 
 T = TypeVar("T", contravariant=True)
@@ -55,8 +68,8 @@ current_ser_purpose: ContextVar[TransportScope] = ContextVar("current_ser_purpos
 
 
 @contextmanager
-def serialization_purpose(purpose: TransportScope) -> Generator[None]:
-    """Context manager to set the current serialization purpose."""
+def transport_scope(purpose: TransportScope) -> Generator[None]:
+    """Context manager to set the current transport scope."""
     token = current_ser_purpose.set(purpose)
     try:
         yield
@@ -72,17 +85,31 @@ class Realm:
 class TransportTypes(Generic[T]):  # noqa: UP046
     """A set of interfaces that can be used as transport formats."""
 
-    types: InitVar[Sequence[SingleTypeDef[T]]]
+    types: Sequence[SingleTypeDef[T]]
+    """Declared transport type hints, e.g. ``File[Literal["application/json"], TextIO]``."""
 
-    def __post_init__(self, types: Sequence[SingleTypeDef[T]]) -> None:
-        """Initialize the TypeSet with a set of types."""
-        self.__types = tuple(types)
+    def __post_init__(self) -> None:
+        """Normalize the declared hints to a tuple."""
+        self.types = tuple(self.types)
 
-    def match_targets(
-        self: TransportTypes[T2], targets: Set[SingleTypeDef[T2]]
-    ) -> list[SingleTypeDef[T2]]:
-        """Filter the types in this set to only those that are in the provided set."""
-        return [t2 for t in self.__types for t2 in targets if is_subtype(t, t2)]
+    def match_targets(self, targets: Collection[TypeForm | File]) -> list[SingleTypeDef[T]]:
+        """Return the supported types that any of the given targets satisfies.
+
+        Args:
+            targets: Transport mediums to match, either type hints or instances. A
+                :class:`~based_datatypes.files.File` instance is matched on its
+                ``mime`` and ``io_type`` so that, say, a JSON driver rejects a
+                pickle target.
+
+        Returns:
+            The declared transport type hints able to read from or write to at
+            least one of the targets.
+        """
+        return [
+            t
+            for t in self.types
+            if any(tg.match(t) if isinstance(tg, File) else is_subtype(tg, t) for tg in targets)
+        ]
 
 
 U = TypeVar("U", bound="Transportable")
@@ -133,7 +160,6 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
     def obj_type(cls) -> SingleTypeDef[V]:
         """Return the type of object this transport driver handles."""
         t = cls.typeargs[V]
-        assert not isinstance(t, UnionType), "U must not be a Union type"
         assert not isinstance(t, tuple)
         return t.single_typedef
 
@@ -144,7 +170,17 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
         t = cls.typeargs[T]
         assert not isinstance(t, tuple)
 
-        return TransportTypes(tuple(t.typeset))
+        typedef = t.typedef
+        if isinstance(typedef, TypeAliasType):
+            typedef = typedef.__value__
+
+        hints = (
+            get_args(typedef)
+            if isinstance(typedef, UnionType) or get_origin(typedef) is Union
+            else (typedef,)
+        )
+
+        return TransportTypes(cast(tuple[SingleTypeDef[T], ...], tuple(hints)))
 
     @classmethod
     @abstractmethod

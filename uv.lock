@@ -179,11 +179,20 @@ dependencies = [
     { name = "polars" },
     { name = "pydantic" },
     { name = "pydantic-core" },
+    { name = "pyyaml" },
     { name = "requests" },
     { name = "sphinx" },
     { name = "sqlparse" },
     { name = "typing-extensions" },
     { name = "yarl" },
+]
+
+[package.optional-dependencies]
+common-transport = [
+    { name = "beautifulsoup4" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "sqlalchemy" },
 ]
 
 [package.dev-dependencies]
@@ -195,7 +204,7 @@ app = [
     { name = "rich" },
 ]
 ci = [
-    { name = "beautifulsoup4" },
+    { name = "based-datatypes", extra = ["common-transport"] },
     { name = "black" },
     { name = "debugpy" },
     { name = "deptry" },
@@ -213,8 +222,6 @@ ci = [
     { name = "mkdocs-material" },
     { name = "mkdocs-section-index" },
     { name = "mkdocstrings", extra = ["python"] },
-    { name = "numpy" },
-    { name = "pillow" },
     { name = "pip-audit" },
     { name = "properdocs" },
     { name = "pyright", extra = ["nodejs"] },
@@ -223,17 +230,10 @@ ci = [
     { name = "python-semantic-release" },
     { name = "rich" },
     { name = "ruff" },
-    { name = "sqlalchemy" },
     { name = "vscode-task-runner" },
 ]
-common-storables = [
-    { name = "beautifulsoup4" },
-    { name = "numpy" },
-    { name = "pillow" },
-    { name = "sqlalchemy" },
-]
 dev = [
-    { name = "beautifulsoup4" },
+    { name = "based-datatypes", extra = ["common-transport"] },
     { name = "black" },
     { name = "debugpy" },
     { name = "deptry" },
@@ -251,15 +251,12 @@ dev = [
     { name = "mkdocs-material" },
     { name = "mkdocs-section-index" },
     { name = "mkdocstrings", extra = ["python"] },
-    { name = "numpy" },
-    { name = "pillow" },
     { name = "pip-audit" },
     { name = "properdocs" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "rich" },
     { name = "ruff" },
-    { name = "sqlalchemy" },
     { name = "vscode-task-runner" },
 ]
 docs = [
@@ -290,19 +287,25 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "beartype", specifier = ">=0.23.1,<0.24.0" },
+    { name = "beautifulsoup4", marker = "extra == 'common-transport'", specifier = ">=4.15.0,<5.0.0" },
     { name = "gitpython", specifier = ">=3.1.62,<4.0.0" },
     { name = "identify", specifier = ">=2.6.20,<3.0.0" },
+    { name = "numpy", marker = "extra == 'common-transport'", specifier = ">=2.5.4,<3.0.0" },
     { name = "packaging", specifier = ">=26.3,<27.0" },
     { name = "pandas", specifier = ">=3.1.0,<4.0.0" },
+    { name = "pillow", marker = "extra == 'common-transport'", specifier = ">=13.0.0,<14.0.0" },
     { name = "polars", specifier = ">=2.1.0,<3.0.0" },
     { name = "pydantic", specifier = ">=2.13.5,<3.0.0" },
     { name = "pydantic-core", specifier = ">=2.46.5,<3.0.0" },
+    { name = "pyyaml", specifier = ">=6.0.3,<7.0.0" },
     { name = "requests", specifier = ">=2.34.2,<3.0.0" },
     { name = "sphinx", specifier = ">=9.2.0,<10.0.0" },
+    { name = "sqlalchemy", marker = "extra == 'common-transport'", specifier = ">=2.1.6,<3.0.0" },
     { name = "sqlparse", specifier = ">=0.6.0,<0.7.0" },
     { name = "typing-extensions", specifier = ">=4.15,<5.0.0" },
     { name = "yarl", specifier = ">=1.25.1,<2.0.0" },
 ]
+provides-extras = ["common-transport"]
 
 [package.metadata.requires-dev]
 app = [
@@ -313,7 +316,7 @@ app = [
     { name = "rich", specifier = ">=15.0.0,<16.0.0" },
 ]
 ci = [
-    { name = "beautifulsoup4", specifier = ">=4.15.0,<5.0.0" },
+    { name = "based-datatypes", extras = ["common-transport"] },
     { name = "black", specifier = ">=26.3.1,<27.0.0" },
     { name = "debugpy", specifier = ">=1.8.20" },
     { name = "deptry", specifier = ">=0.25.1,<0.26.0" },
@@ -331,8 +334,6 @@ ci = [
     { name = "mkdocs-material", specifier = ">=9.7.6,<10.0.0" },
     { name = "mkdocs-section-index", specifier = ">=0.3.12,<0.4.0" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.4,<2.0.0" },
-    { name = "numpy", specifier = ">=2.5.4,<3.0.0" },
-    { name = "pillow", specifier = ">=13.0.0,<14.0.0" },
     { name = "pip-audit", specifier = ">=2.10.0,<3.0.0" },
     { name = "properdocs", specifier = ">=1.6.7,<2.0.0" },
     { name = "pyright", extras = ["nodejs"], specifier = ">=1.1.414,<2.0.0" },
@@ -341,17 +342,10 @@ ci = [
     { name = "python-semantic-release", specifier = ">=10.6.2,<11.0.0" },
     { name = "rich", specifier = ">=15.0.0,<16.0.0" },
     { name = "ruff", specifier = ">=0.16.6,<0.17.0" },
-    { name = "sqlalchemy", specifier = ">=2.1.6,<3.0.0" },
     { name = "vscode-task-runner", specifier = ">=3.0.1,<4.0.0" },
 ]
-common-storables = [
-    { name = "beautifulsoup4", specifier = ">=4.15.0,<5.0.0" },
-    { name = "numpy", specifier = ">=2.5.4,<3.0.0" },
-    { name = "pillow", specifier = ">=13.0.0,<14.0.0" },
-    { name = "sqlalchemy", specifier = ">=2.1.6,<3.0.0" },
-]
 dev = [
-    { name = "beautifulsoup4", specifier = ">=4.15.0,<5.0.0" },
+    { name = "based-datatypes", extras = ["common-transport"] },
     { name = "black", specifier = ">=26.3.1,<27.0.0" },
     { name = "debugpy", specifier = ">=1.8.20" },
     { name = "deptry", specifier = ">=0.25.1,<0.26.0" },
@@ -369,15 +363,12 @@ dev = [
     { name = "mkdocs-material", specifier = ">=9.7.6,<10.0.0" },
     { name = "mkdocs-section-index", specifier = ">=0.3.12,<0.4.0" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.4,<2.0.0" },
-    { name = "numpy", specifier = ">=2.5.4,<3.0.0" },
-    { name = "pillow", specifier = ">=13.0.0,<14.0.0" },
     { name = "pip-audit", specifier = ">=2.10.0,<3.0.0" },
     { name = "properdocs", specifier = ">=1.6.7,<2.0.0" },
     { name = "pytest", specifier = ">=9.0.3,<10.0.0" },
     { name = "pytest-cov", specifier = ">=7.1.0,<8.0.0" },
     { name = "rich", specifier = ">=15.0.0,<16.0.0" },
     { name = "ruff", specifier = ">=0.16.6,<0.17.0" },
-    { name = "sqlalchemy", specifier = ">=2.1.6,<3.0.0" },
     { name = "vscode-task-runner", specifier = ">=3.0.1,<4.0.0" },
 ]
 docs = [
