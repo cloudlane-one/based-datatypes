@@ -32,6 +32,7 @@ print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 | `typedef_to_typeset(typedef)` | The set of concrete classes a hint can produce (`int \| None` → `{int, NoneType}`). |
 | `is_subtype(type_, supertype)` | Subtyping test over generic and special-form hints. |
 | `has_type(obj, type_)` | Runtime value check driven by a hint (beartype). |
+| `is_type_hint(obj)` | Whether an object describes a type rather than being a value of one. |
 | `get_lowest_common_base(types)` | Most derived shared base of several classes. |
 | `extract_nullable_type(hint)` | Non-`None` base of an optional hint. |
 | `get_inheritance_distance(cls, base)` | Signed number of steps between two classes. |

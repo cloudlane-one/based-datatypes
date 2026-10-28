@@ -18,6 +18,8 @@ nav:
       - Type reflection: how-to-typing.md
       - Hashing: how-to-hashing.md
       - Data utilities: how-to-data.md
+      - Files and directories: how-to-files.md
+      - Transport and serialization: how-to-transport.md
       - Descriptors: how-to-descriptors.md
       - Object references: how-to-refs.md
       - Distributions: how-to-dist.md

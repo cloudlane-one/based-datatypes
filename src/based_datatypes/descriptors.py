@@ -4,7 +4,16 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable
-from typing import Any, Concatenate, Generic, Literal, Self, TypeVar, cast, overload
+from typing import (
+    Any,
+    Concatenate,
+    Generic,
+    Literal,
+    Self,
+    TypeVar,
+    cast,
+    overload,
+)
 
 
 class dualmethod[C, **P, T]:  # noqa: N801
@@ -43,6 +52,32 @@ class dualmethod[C, **P, T]:  # noqa: N801
                 return self.func(owner, *args, **kwargs)
 
         return wrapper
+
+
+def cached_method[S, R, **P](
+    func: Callable[Concatenate[S, P], R],
+) -> Callable[Concatenate[S, P], R]:
+    """Decorator to cache method results on the instance level."""
+
+    @functools.wraps(func)
+    def wrapper(self: S, *args: P.args, **kwargs: P.kwargs) -> R:
+        # ``vars`` is the receiver's own namespace, so a subclass never reuses a
+        # cache an ancestor stored: inherited attributes would hide it from
+        # ``hasattr`` and let classmethod caches leak down the MRO.
+        cache_name = f"__{func.__name__}_cache"
+        namespace = vars(self)
+        if cache_name not in namespace:
+            setattr(self, cache_name, {})
+
+        cache: dict[tuple[Any, ...], R] = namespace[cache_name]
+        key = (args, frozenset(kwargs.items()))
+
+        if key not in cache:
+            cache[key] = func(self, *args, **kwargs)
+
+        return cache[key]
+
+    return wrapper
 
 
 class Read:

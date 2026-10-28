@@ -2,7 +2,7 @@
 
 import pytest
 
-from based_datatypes.descriptors import Delete, Read, RWD, Write, dualmethod, prop
+from based_datatypes.descriptors import Delete, Read, RWD, Write, cached_method, dualmethod, prop
 
 
 class Dual:
@@ -341,3 +341,129 @@ def test_read_write_delete_hierarchy() -> None:
     assert issubclass(Delete, Read)
     assert issubclass(RWD, Write)
     assert issubclass(RWD, Delete)
+
+
+class CachedMethodUser:
+    """Class caching the result of an instance method per argument set."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[int, ...], dict[str, int]]] = []
+
+    @cached_method
+    def compute(self, value: int, *, factor: int = 1) -> int:
+        """Compute a value, recording every real call."""
+        self.calls.append(((value,), {"factor": factor}))
+        return value * factor
+
+    @cached_method
+    def combine(self, *, a: int, b: int) -> int:
+        """Combine two keyword arguments, recording every real call."""
+        self.calls.append(((), {"factor": a + b}))
+        return a + b
+
+
+class CachedMethodChild(CachedMethodUser):
+    """Subclass sharing the decorated method but not its cache."""
+
+
+def test_cached_method_caches_per_instance() -> None:
+    """Repeated calls with the same arguments only compute once."""
+    user = CachedMethodUser()
+
+    assert user.compute(2) == 2
+    assert user.compute(2) == 2
+    assert len(user.calls) == 1
+
+
+def test_cached_method_distinguishes_arguments() -> None:
+    """Positional and keyword arguments form distinct cache keys."""
+    user = CachedMethodUser()
+
+    assert user.compute(1) == 1
+    assert user.compute(2) == 2
+    assert user.compute(1, factor=3) == 3
+    assert len(user.calls) == 3
+
+
+def test_cached_method_ignores_keyword_order() -> None:
+    """Keyword arguments are keyed regardless of order."""
+    user = CachedMethodUser()
+
+    assert user.combine(a=1, b=2) == 3
+    assert user.combine(b=2, a=1) == 3
+    assert len(user.calls) == 1
+
+
+def test_cached_method_is_per_instance_not_per_class() -> None:
+    """Each instance keeps its own cache."""
+    first = CachedMethodUser()
+    second = CachedMethodUser()
+
+    assert first.compute(3) == 3
+    assert second.compute(3) == 3
+    assert len(first.calls) == 1
+    assert len(second.calls) == 1
+
+
+def test_cached_method_on_subclass_is_independent() -> None:
+    """A subclass instance has its own cache."""
+    child = CachedMethodChild()
+    parent = CachedMethodUser()
+
+    assert child.compute(4) == 4
+    assert parent.compute(4) == 4
+    assert len(child.calls) == 1
+    assert len(parent.calls) == 1
+
+
+def test_cached_method_preserves_function_metadata() -> None:
+    """The wrapper keeps the wrapped name and docstring."""
+    assert CachedMethodUser.compute.__name__ == "compute"
+    assert CachedMethodUser.compute.__doc__ == "Compute a value, recording every real call."
+
+
+class CachedClassMethod:
+    """Class whose cached classmethod result depends on the subclass."""
+
+    value = 1
+
+    @classmethod
+    @cached_method
+    def current(cls) -> int:
+        """Return the class-level value."""
+        return cls.value
+
+
+class CachedClassMethodChild(CachedClassMethod):
+    """Subclass with a different class-level value."""
+
+    value = 2
+
+
+def test_cached_method_classmethod_caches_per_class() -> None:
+    """A subclass does not inherit the parent's classmethod cache."""
+    assert CachedClassMethod.current() == 1
+    assert CachedClassMethodChild.current() == 2
+
+    assert CachedClassMethod.current() == 1
+    assert CachedClassMethodChild.current() == 2
+
+
+def test_cached_method_classmethod_caches_in_own_namespace() -> None:
+    """The cache lives on the class that was called, not on its base."""
+    assert CachedClassMethod.current() == 1
+    assert CachedClassMethodChild.current() == 2
+
+    assert "__current_cache" in vars(CachedClassMethodChild)
+    assert (
+        CachedClassMethodChild.__dict__["__current_cache"]
+        != CachedClassMethod.__dict__["__current_cache"]
+    )
+
+
+def test_cached_method_rejects_unhashable_arguments() -> None:
+    """An unhashable argument cannot form a cache key."""
+    user = CachedMethodUser()
+
+    with pytest.raises(TypeError):
+        user.compute([1], factor=1)  # pyright: ignore[reportArgumentType]

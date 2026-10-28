@@ -7,16 +7,35 @@ requires-python = ">=3.13,<4"
 dependencies = [
     "beartype>=0.23.1,<0.24.0",
     "gitpython>=3.1.62,<4.0.0",
+    "identify>=2.6.20,<3.0.0",
     "packaging>=26.3,<27.0",
     "pandas>=3.1.0,<4.0.0",
+    "polars>=2.1.0,<3.0.0",
     "pydantic>=2.13.5,<3.0.0",
     "pydantic-core>=2.46.5,<3.0.0",
+    "pyyaml>=6.0.3,<7.0.0",
     "requests>=2.34.2,<3.0.0",
     "sphinx>=9.2.0,<10.0.0",
+    "sqlparse>=0.6.0,<0.7.0",
     "typing-extensions>=4.15,<5.0.0",
     "yarl>=1.25.1,<2.0.0",
 ]
 dynamic = ["version"]
+
+[project.optional-dependencies]
+# Serializer implementations for the optional formats the transport layer supports.
+common-transport = [
+    "beautifulsoup4>=4.15.0,<5.0.0",
+    # Parquet and Excel backends for the pandas driver.
+    "openpyxl>=3.1.5,<4.0.0",
+    "pyarrow>=21.0.0,<30.0.0",
+    # Excel backends for the polars driver.
+    "fastexcel>=0.14.0,<1.0.0",
+    "xlsxwriter>=3.2.9,<4.0.0",
+    "numpy>=2.5.4,<3.0.0",
+    "pillow>=13.0.0,<14.0.0",
+    "sqlalchemy>=2.1.6,<3.0.0",
+]
 
 [build-system]
 requires = ["hatchling", "uv-dynamic-versioning"]
@@ -35,6 +54,9 @@ dev = [
     { include-group = "test" },
     { include-group = "docs" },
     { include-group = "app" },
+    # The common transport serializers are declared once, as the ``common-transport``
+    # extra; this self-reference pulls them into the development environment.
+    "based-datatypes[common-transport]",
     "vscode-task-runner>=3.0.1,<4.0.0",
 ]
 # Generating, building and serving documentation.
@@ -113,7 +135,18 @@ non_dev_dependency_groups = ["app"]
 
 [tool.deptry.per_rule_ignores]
 DEP001 = ["polars"]
-DEP002 = ["ipykernel", "jupyter", "jupytext", "rich"]
+# Optional serializer backends: imported by pandas/polars at runtime, not by this
+# library, so deptry cannot see the usage.
+DEP002 = [
+    "ipykernel",
+    "jupyter",
+    "jupytext",
+    "rich",
+    "openpyxl",
+    "pyarrow",
+    "fastexcel",
+    "xlsxwriter",
+]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
