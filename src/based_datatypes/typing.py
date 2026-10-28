@@ -36,11 +36,10 @@ from beartype.door import is_bearable, is_subhint
 from beartype.roar import BeartypeDoorNonpepException
 from pydantic import TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
+from typing_extensions import TypeForm
 
 from .descriptors import prop
 from .runtime import get_subclasses
-from typing_extensions import TypeForm
-
 from .types import (
     AnyTypeHint,
     GenericAlias,
@@ -58,9 +57,7 @@ def _resolve_typealias(
     return (
         type_.__value__
         if isinstance(type_, TypeAliasType)
-        else get_args(type_)[0]
-        if get_origin(type_) is Annotated
-        else type_
+        else get_args(type_)[0] if get_origin(type_) is Annotated else type_
     )
 
 
@@ -173,7 +170,9 @@ def typedef_to_typeset(  # noqa: C901
     return typeset
 
 
-def is_subtype[T](type_: AnyTypeHint, supertype: TypeForm[T]) -> TypeGuard[T]:
+def is_subtype[T](
+    type_: AnyTypeHint, supertype: TypeForm[T] | SingleTypeDef[T]
+) -> TypeGuard[TypeForm[T]]:
     """Check if object is of given type hint.
 
     Args:
@@ -199,7 +198,7 @@ def is_subtype[T](type_: AnyTypeHint, supertype: TypeForm[T]) -> TypeGuard[T]:
         return len(supertype_tuple) > 0 and all(issubclass(t, supertype_tuple) for t in typeset)
 
 
-def has_type[T](obj: Any, type_: TypeForm[T] | None) -> TypeGuard[T]:
+def has_type[T](obj: Any, type_: TypeForm[T] | SingleTypeDef[T] | None) -> TypeGuard[T]:
     """Check if object is of given type hint.
 
     Args:

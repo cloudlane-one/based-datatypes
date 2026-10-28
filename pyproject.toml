@@ -7,12 +7,15 @@ requires-python = ">=3.13,<4"
 dependencies = [
     "beartype>=0.23.1,<0.24.0",
     "gitpython>=3.1.62,<4.0.0",
+    "identify>=2.6.20,<3.0.0",
     "packaging>=26.3,<27.0",
     "pandas>=3.1.0,<4.0.0",
+    "polars>=2.1.0,<3.0.0",
     "pydantic>=2.13.5,<3.0.0",
     "pydantic-core>=2.46.5,<3.0.0",
     "requests>=2.34.2,<3.0.0",
     "sphinx>=9.2.0,<10.0.0",
+    "sqlparse>=0.6.0,<0.7.0",
     "typing-extensions>=4.15,<5.0.0",
     "yarl>=1.25.1,<2.0.0",
 ]
@@ -29,12 +32,20 @@ ci = [
     "pyright[nodejs]>=1.1.414,<2.0.0",
     "python-semantic-release>=10.6.2,<11.0.0",
 ]
+# Common serializer implementations.
+common_storables = [
+    "beautifulsoup4>=4.15.0,<5.0.0",
+    "numpy>=2.5.4,<3.0.0",
+    "pillow>=13.0.0,<14.0.0",
+    "sqlalchemy>=2.1.6,<3.0.0",
+]
 # Linting, testing, documentation, and application tools; Installed per default by uv in development environments.
 dev = [
     { include-group = "lint" },
     { include-group = "test" },
     { include-group = "docs" },
     { include-group = "app" },
+    { include-group = "common_storables" },
     "vscode-task-runner>=3.0.1,<4.0.0",
 ]
 # Generating, building and serving documentation.
