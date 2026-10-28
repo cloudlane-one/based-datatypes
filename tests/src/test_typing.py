@@ -192,6 +192,25 @@ def test_has_type_matches_values() -> None:
     assert not bt.has_type(["x"], list[int])
 
 
+def test_is_type_hint_accepts_hints() -> None:
+    """Classes, unions, aliases and parameterized generics are type hints."""
+    assert bt.is_type_hint(int)
+    assert bt.is_type_hint(int | str)
+    assert bt.is_type_hint(list[int])
+    assert bt.is_type_hint(AliasInt)
+    assert bt.is_type_hint(AliasGeneric[int])
+    assert bt.is_type_hint(Annotated[int, "meta"])
+
+
+def test_is_type_hint_rejects_values() -> None:
+    """Instances and plain values are not type hints."""
+    assert not bt.is_type_hint(1)
+    assert not bt.is_type_hint("int")
+    assert not bt.is_type_hint([1])
+    assert not bt.is_type_hint({"a": 1})
+    assert not bt.is_type_hint(None)
+
+
 def test_get_lowest_common_base_of_an_empty_iterable() -> None:
     """An empty input yields ``object``."""
     assert bt.get_lowest_common_base([]) is object

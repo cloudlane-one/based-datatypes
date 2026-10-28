@@ -40,6 +40,7 @@ from based_datatypes.transport.base import (
     transport_scope,
 )
 from based_datatypes.transport.common import (
+    JSONDict,
     JSONFile,
     JSONTransporter,
     PickleFile,
@@ -49,7 +50,7 @@ from based_datatypes.transport.common import (
     XMLFile,
     check_type_and_cast,
 )
-from based_datatypes.typing import SingleTypeDef
+from based_datatypes.typing import SingleTypeDef, has_type
 
 
 class Record(BaseModel):
@@ -552,6 +553,12 @@ class TestJSONTransporter:
 
         with pytest.raises(TypeError, match="does not match"):
             JSONTransporter.import_object(cast(JSONFile, target), Realm(), cast(Any, list[int]))
+
+    def test_alias_admits_scalars_at_any_depth(self) -> None:
+        """The recursive JSON alias accepts scalar leaves and nothing else."""
+        assert has_type({"a": 1, "b": {"c": [1, "x", None]}}, JSONDict)
+        assert not has_type({"a": {1, 2}}, JSONDict)
+        assert not has_type({"a": 1}, list[int])
 
     def test_export_rejects_unsupported_medium(self, workdir: Path) -> None:
         """No driver means a clear ``TypeError``."""

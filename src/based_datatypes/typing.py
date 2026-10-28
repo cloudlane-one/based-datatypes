@@ -173,7 +173,7 @@ def typedef_to_typeset(  # noqa: C901
 
 
 def is_subtype[T](
-    type_: AnyTypeHint, supertype: TypeForm[T] | SingleTypeDef[T]
+    type_: AnyTypeHint, supertype: TypeForm[T] | SingleTypeDef[T] | UnionType
 ) -> TypeGuard[TypeForm[T]]:
     """Check if object is of given type hint.
 
@@ -200,7 +200,7 @@ def is_subtype[T](
         return len(supertype_tuple) > 0 and all(issubclass(t, supertype_tuple) for t in typeset)
 
 
-def has_type[T](obj: Any, type_: TypeForm[T] | SingleTypeDef[T] | None) -> TypeGuard[T]:
+def has_type[T](obj: Any, type_: TypeForm[T] | SingleTypeDef[T] | UnionType | None) -> TypeGuard[T]:
     """Check if object is of given type hint.
 
     Args:
@@ -211,6 +211,24 @@ def has_type[T](obj: Any, type_: TypeForm[T] | SingleTypeDef[T] | None) -> TypeG
         True if object is of given type.
     """
     return is_bearable(obj, type_)  # pyright: ignore[reportArgumentType]
+
+
+def is_type_hint[T](obj: TypeForm[T] | T) -> TypeGuard[TypeForm[T]]:
+    """Check whether an object is a type hint rather than a value.
+
+    Classes, unions, named aliases, parameterized generics and any hint with an
+    origin count as type hints; instances, strings and numbers do not.
+
+    Args:
+        obj: The object to check.
+
+    Returns:
+        ``True`` if ``obj`` describes a type instead of being a value of one.
+    """
+    return (
+        isinstance(obj, type | UnionType | TypeAliasType | GenericAlias)
+        or get_origin(obj) is not None
+    )
 
 
 def get_lowest_common_base(types: Iterable[type]) -> type:

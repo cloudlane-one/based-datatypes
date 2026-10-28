@@ -1,18 +1,18 @@
 """Arbitrary object (de-)serialization for transport across various mediums."""
 
 from collections.abc import Collection
-from types import GenericAlias, UnionType
-from typing import Any, TypeAliasType, Union, cast, get_args, get_origin
+from types import UnionType
+from typing import Any, cast, get_args, get_origin
 
 from typing_extensions import TypeForm
 
 from based_datatypes.files import File
-from based_datatypes.types import AnyTypeHint
 from based_datatypes.typing import (
     SingleTypeDef,
     TypeRef,
     has_type,
     is_subtype,
+    is_type_hint,
     typedef_to_typeset,
 )
 
@@ -57,69 +57,18 @@ __all__ = [
 custom_drivers: dict[SingleTypeDef | UnionType, type[TransportDriver]] = {}
 
 
-def _is_type_hint(obj: object) -> bool:
-    """Check whether an object is a type hint rather than a value."""
-    return (
-        isinstance(obj, type | UnionType | TypeAliasType | GenericAlias)
-        or get_origin(obj) is not None
-    )
-
-
-def _alternatives(registered: SingleTypeDef | UnionType) -> tuple[object, ...]:
-    """Return the union members of a driver key, or the key itself."""
-    if isinstance(registered, UnionType) or get_origin(registered) is Union:
-        return get_args(registered)
-
-    return (registered,)
-
-
-def _hint_covers(subject: object, registered: SingleTypeDef | UnionType) -> bool:
-    """Check whether a driver key covers a type hint, keeping its arguments."""
-    hint = cast(AnyTypeHint, subject)
-    supertype = cast("SingleTypeDef[Any] | TypeForm[Any]", registered)
-
-    if is_subtype(hint, supertype):
-        return True
-
-    # A bare ``dict`` is not a subtype of ``dict[str, ...]`` even though the
-    # alias describes it, so resolve named aliases to their value's typeset.
-    return isinstance(registered, TypeAliasType) and any(
-        is_subtype(hint, cast("SingleTypeDef[Any] | TypeForm[Any]", member))
-        for member in typedef_to_typeset(registered)
-    )
-
-
-def _value_matches(value: object, hint: object) -> bool:
-    """Check one concrete value against one driver-key alternative.
-
-    Container hints keep their element constraint: a list only matches when
-    every item satisfies the declared element type.
-    """
-    origin = get_origin(hint)
-    args = get_args(hint)
-
-    if origin is None:
-        if isinstance(hint, TypeAliasType):
-            return any(_value_matches(value, member) for member in typedef_to_typeset(hint))
-        if isinstance(hint, type):
-            return isinstance(value, hint)
-        return is_subtype(type(value), cast("SingleTypeDef[Any] | TypeForm[Any]", hint))
-
-    if not isinstance(origin, type) or not isinstance(value, origin):
-        return False
-
-    if origin in (list, tuple) and args and args[0] is not Ellipsis:
-        return all(has_type(item, args[0]) for item in cast(Collection[object], value))
-
-    return True
-
-
 def _covers(registered: SingleTypeDef | UnionType, subject: object) -> bool:
-    """Check whether a registered driver key covers a value, type or type hint."""
-    if _is_type_hint(subject):
-        return _hint_covers(subject, registered)
+    """Check whether a registered driver key covers a value, type or type hint.
 
-    return any(_value_matches(subject, alternative) for alternative in _alternatives(registered))
+    Hints are compared as types, so container arguments keep their meaning: a
+    ``list[Statement]`` hint is covered by a list-of-statements key while
+    ``list[int]`` is not. Values are checked against the declared hint itself,
+    which also holds container elements to their declared element type.
+    """
+    if is_type_hint(subject):
+        return is_subtype(subject, registered)
+
+    return has_type(subject, registered)
 
 
 def _lossless_for(driver: type[TransportDriver], target: object) -> bool:

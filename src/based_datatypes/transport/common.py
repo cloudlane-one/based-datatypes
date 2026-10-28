@@ -46,7 +46,8 @@ JF = TypeVar(
 # JSON / YAML dict
 
 type JSONScalar = str | int | float | bool | None
-type JSONDict = dict[str, JSONDict | list[JSONScalar]]
+type JSONValue = JSONScalar | dict[str, JSONValue] | list[JSONValue]
+type JSONDict = dict[str, JSONValue]
 
 J = TypeVar("J", bound=JSONDict, default=JSONDict)
 
