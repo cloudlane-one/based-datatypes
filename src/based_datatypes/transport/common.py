@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import pickle
 import xml.etree.ElementTree as xml  # noqa: N813
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from types import UnionType
-from typing import Any, BinaryIO, Literal, TextIO, TypeVar, cast
+from typing import Any, BinaryIO, Literal, TextIO, TypeVar, cast, get_origin
 
 import polars as pl
 import sqlparse
@@ -63,6 +63,25 @@ def _encoded_size(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
+def _serialize_json(instance: Any, mime: str) -> str:
+    """Serialize JSON-compatible data for the given MIME type.
+
+    The payload is built before the target is opened, so a value the encoder
+    rejects cannot truncate an existing file.
+
+    Args:
+        instance: The data to serialize.
+        mime: The target MIME type, ``application/yaml`` or JSON otherwise.
+
+    Returns:
+        The serialized text.
+    """
+    if mime == "application/yaml":
+        return yaml.safe_dump(instance, allow_unicode=True)
+
+    return json.dumps(instance, indent=2)
+
+
 def _sample_step(total: int, limit: int = 100) -> int:
     """Return a stride that yields at most ``limit`` evenly spread rows.
 
@@ -96,10 +115,7 @@ class JSONTransporter(TransportDriver[JSONDict, JSONFile]):
         annotation: SingleTypeDef[JSONDict] | None = None,
     ) -> int:
         """Measure the encoded dictionary without writing it."""
-        if target.mime == "application/yaml":
-            return _encoded_size(yaml.safe_dump(instance, allow_unicode=True))
-
-        return _encoded_size(json.dumps(instance, indent=2))
+        return _encoded_size(_serialize_json(instance, target.mime))
 
     @classmethod
     def import_object(
@@ -128,11 +144,10 @@ class JSONTransporter(TransportDriver[JSONDict, JSONFile]):
         annotation: SingleTypeDef[JSONDict] | None = None,
     ) -> None:
         """Convert a dictionary to a JSON or YAML file."""
+        text = _serialize_json(instance, target.mime)
+
         with target.open("w") as f:
-            if target.mime == "application/yaml":
-                yaml.safe_dump(instance, allow_unicode=True, stream=f)
-            else:
-                f.write(json.dumps(instance, indent=2))
+            f.write(text)
 
 
 common_drivers[JSONDict] = JSONTransporter
@@ -147,6 +162,15 @@ XMLF = TypeVar(
     bound=XMLFile,
     default=XMLFile,
 )
+
+
+def _serialize_xml(instance: xml.ElementTree) -> str:
+    """Serialize a tree, keeping comments and processing instructions intact."""
+    root = instance.getroot()
+    if root is None:
+        return ""
+
+    return xml.tostring(root, encoding="unicode")
 
 
 class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
@@ -166,11 +190,7 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
         annotation: SingleTypeDef[xml.ElementTree] | None = None,
     ) -> int:
         """Measure the serialized tree without writing it."""
-        root = instance.getroot()
-        if root is None:
-            return 0
-
-        return _encoded_size(xml.tostring(root, encoding="unicode"))
+        return _encoded_size(_serialize_xml(instance))
 
     @classmethod
     def import_object(
@@ -183,8 +203,11 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
         if source.mime not in {"application/xml", "text/xml"}:
             raise ValueError(f"Unsupported MIME type: {source.mime}")
 
+        # The default builder drops comments and processing instructions, which
+        # would break the lossless round trip this driver declares.
+        parser = xml.XMLParser(target=xml.TreeBuilder(insert_comments=True, insert_pis=True))
         with source.open("r") as f:
-            tree = xml.parse(f)
+            tree = xml.parse(f, parser=parser)
 
         return check_type_and_cast(tree, annotation)
 
@@ -198,8 +221,10 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
     ) -> None:
         """Convert an XML ElementTree to a file."""
         assert target.mime in {"application/xml", "text/xml"}
+        text = _serialize_xml(instance)
+
         with target.open("w") as f:
-            instance.write(f, encoding="unicode")
+            f.write(text)
 
 
 common_drivers[xml.ElementTree] = XMLTransporter
@@ -221,11 +246,7 @@ try:
             annotation: SingleTypeDef[pyd.BaseModel] | None = None,
         ) -> int:
             """Measure the serialized model without writing it."""
-            data = instance.model_dump()
-            if target.mime == "application/yaml":
-                return _encoded_size(yaml.safe_dump(data, allow_unicode=True))
-
-            return _encoded_size(json.dumps(data, indent=2))
+            return _encoded_size(_serialize_json(instance.model_dump(mode="json"), target.mime))
 
         @classmethod
         def import_object(
@@ -256,11 +277,13 @@ try:
             annotation: SingleTypeDef[pyd.BaseModel] | None = None,
         ) -> None:
             """Convert a Pydantic model to a JSON or YAML file."""
+            # ``mode="json"`` converts dates, UUIDs and decimals to JSON-native
+            # values before the target is opened, so a value the encoder rejects
+            # cannot truncate an existing file and YAML's safe dumper accepts it.
+            text = _serialize_json(instance.model_dump(mode="json"), target.mime)
+
             with target.open("w") as f:
-                if target.mime == "application/yaml":
-                    yaml.safe_dump(instance.model_dump(), allow_unicode=True, stream=f)
-                else:
-                    json.dump(instance.model_dump(), f, indent=2)
+                f.write(text)
 
     common_drivers[pyd.BaseModel] = PydTransporter
 except ImportError:
@@ -437,6 +460,20 @@ try:
         | File[Literal["text/csv"], TextIO]
     )
 
+    def _require_native_dtype(instance: np.ndarray) -> None:
+        """Refuse arrays whose native-format payload would need unpickling.
+
+        ``np.save`` pickles object arrays, but loading them back requires
+        ``allow_pickle=True``, which the import side deliberately never enables:
+        that would bypass the pickle driver's Open/IPC scope restriction.
+        """
+        if instance.dtype.hasobject:
+            raise TypeError(
+                "NumPy arrays with object dtype cannot be exported to npy/npz: the "
+                "native formats would require pickling, which is restricted to the "
+                "Open and IPC scopes. Convert the array to a concrete dtype first."
+            )
+
     class NpTransporter(TransportDriver[np.ndarray, NpFile]):
         """Transporter for NumPy arrays."""
 
@@ -454,6 +491,9 @@ try:
             annotation: SingleTypeDef[np.ndarray] | None = None,
         ) -> int:
             """Estimate the encoded size from the array's memory footprint."""
+            if target.mime in {"application/x-npy", "application/x-npz"}:
+                _require_native_dtype(instance)
+
             if target.mime == "application/x-npy":
                 # The ``.npy`` format prepends a fixed 128-byte header.
                 return instance.nbytes + 128
@@ -471,10 +511,10 @@ try:
             with source.open("r") as f:
                 if source.mime == "application/x-npy":
                     f = cast(BinaryIO, f)
-                    res = np.load(f)
+                    res = np.load(f, allow_pickle=False)
                 elif source.mime == "application/x-npz":
                     f = cast(BinaryIO, f)
-                    res = np.load(f)["arr_0"]
+                    res = np.load(f, allow_pickle=False)["arr_0"]
                 elif source.mime == "text/csv":
                     res = np.loadtxt(f, delimiter=",")
                 else:
@@ -491,6 +531,9 @@ try:
             annotation: SingleTypeDef[np.ndarray] | None = None,
         ) -> None:
             """Convert a NumPy array to a file."""
+            if target.mime in {"application/x-npy", "application/x-npz"}:
+                _require_native_dtype(instance)
+
             with target.open("w") as f:
                 if target.mime == "application/x-npy":
                     f = cast(BinaryIO, f)
@@ -557,7 +600,20 @@ try:
 
             stmts = [sqla.text(str(stmt)) for stmt in parsed_sql]
 
-            return check_type_and_cast(stmts[0] if len(stmts) == 1 else stmts, annotation)
+            # Rebuild the container the annotation asks for; the statement count
+            # alone cannot tell a scalar import from a one-element list.
+            origin = get_origin(annotation) if annotation is not None else None
+            shaped: object
+            if origin is list or origin is Sequence:
+                shaped = list(stmts)
+            elif origin is tuple:
+                shaped = tuple(stmts)
+            elif len(stmts) == 1:
+                shaped = stmts[0]
+            else:
+                shaped = stmts
+
+            return check_type_and_cast(shaped, annotation)
 
         @classmethod
         def export_object(
@@ -599,6 +655,32 @@ try:
 
     ImageF = TypeVar("ImageF", bound=ImageFile, default=ImageFile)
 
+    _BYTES_PER_BAND: dict[str, float] = {
+        "1": 0.125,
+        "I": 4,
+        "F": 4,
+        "I;16": 2,
+        "I;16B": 2,
+        "I;16L": 2,
+        "I;16N": 2,
+    }
+    """Bytes per pixel and band for modes that are not one byte per band."""
+
+    def _image_format_for_mime(mime: str) -> str | None:
+        """Return the PIL encoder format registered for a MIME type.
+
+        Pillow keys ``Image.MIME`` by format in newer releases and by MIME type
+        in older ones, so both directions are accepted.
+        """
+        Image.init()
+        for key, value in Image.MIME.items():
+            if key == mime:
+                return value
+            if value == mime:
+                return key
+
+        return None
+
     class ImageTransporter(TransportDriver[Image.Image, ImageFile]):
         """Transporter for PIL Images."""
 
@@ -620,7 +702,8 @@ try:
             Container overhead and compression are not modelled, so the result
             can be smaller than a tiny compressed file.
             """
-            return instance.width * instance.height * len(instance.getbands())
+            bytes_per_band = _BYTES_PER_BAND.get(instance.mode, 1)
+            return int(instance.width * instance.height * len(instance.getbands()) * bytes_per_band)
 
         @classmethod
         def import_object(
@@ -645,9 +728,10 @@ try:
             annotation: SingleTypeDef[Image.Image] | None = None,
         ) -> None:
             """Convert an image to a file."""
-            image_format = instance.format or Image.registered_extensions().get(
-                target.extension.lower()
-            )
+            # The encoder comes from the target format, never from the source
+            # image: a JPEG loaded from disk must still be written as PNG when
+            # the target is a PNG, or the payload contradicts the declared loss.
+            image_format = _image_format_for_mime(target.mime)
             if image_format is None:
                 raise ValueError(f"Unsupported image MIME type: {target.mime}")
 

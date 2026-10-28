@@ -19,6 +19,7 @@ from typing import (
     TextIO,
     TypeVar,
     cast,
+    get_origin,
     overload,
 )
 
@@ -140,12 +141,25 @@ class File(ABC, Generic[M, I]):
             io.close()
 
     def match(self, hint: SingleTypeDef[Any]) -> bool:
-        """Check whether a declared transport hint accepts the given target."""
+        """Check whether a declared transport hint accepts the given target.
+
+        A hint may name a concrete ``File`` subclass, in which case the target
+        must be an instance of it as well as match its MIME type and IO type. A
+        bare ``File`` hint (no format arguments) matches any file of that class.
+        """
         ref = TypeRef(hint)
         if not is_subtype(ref.typeform, File):
             return False
 
-        mime_ref, io_ref = TypeRef(hint).arg_typerefs
+        origin = get_origin(ref.typeform) or ref.typeform
+        if not isinstance(origin, type) or not isinstance(self, origin):
+            return False
+
+        args = ref.arg_typerefs
+        if len(args) != 2:
+            return True
+
+        mime_ref, io_ref = args
         return (
             len(mime_ref.literal_values) == 0 or self.mime in mime_ref.literal_values
         ) and is_subtype(self.io_type, io_ref.typeform)
@@ -221,9 +235,22 @@ class LocalFile(File[M, TextIO | BinaryIO]):
     ) -> TextIO | BinaryIO: ...
 
     def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> TextIO | BinaryIO:
-        """Return the file's content as a text IO stream."""
+        """Return the file's content as a text IO stream.
+
+        Text streams always use UTF-8 with newline translation disabled, so the
+        bytes on disk do not depend on the platform or locale and match what the
+        transport estimators measure.
+        """
         if issubclass(self.io_type, TextIO):
-            return cast(TextIO, open(self.path, mode=self.get_file_mode(mode, "text")))
+            return cast(
+                TextIO,
+                open(
+                    self.path,
+                    mode=self.get_file_mode(mode, "text"),
+                    encoding="utf-8",
+                    newline="",
+                ),
+            )
 
         return cast(BinaryIO, open(self.path, mode=self.get_file_mode(mode, "binary")))
 

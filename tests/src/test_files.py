@@ -1,7 +1,8 @@
 """Tests for :mod:`based_datatypes.files`."""
 
+import io
 from pathlib import Path
-from typing import Any, BinaryIO, TextIO, cast
+from typing import Any, BinaryIO, Literal, TextIO, cast
 
 import pytest
 
@@ -445,3 +446,61 @@ class TestAbstractBases:
         """``Dir`` cannot be instantiated directly."""
         with pytest.raises(TypeError):
             Dir()  # pyright: ignore[reportAbstractUsage]
+
+
+class OtherFile(File[str, TextIO]):
+    """A different file implementation with the same format."""
+
+    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> TextIO:
+        """Return an in-memory stream."""
+        return io.StringIO()
+
+
+class TestFileMatch:
+    """Tests for :meth:`File.match`."""
+
+    def test_matches_mime_and_io_type(self, workdir: Path) -> None:
+        """A hint matches when its MIME type and IO type agree."""
+        file = make_file(workdir, "f", "application/json")
+
+        assert file.match(File[Literal["application/json"], TextIO])
+        assert not file.match(File[Literal["application/pickle"], TextIO])
+        assert not file.match(File[Literal["application/json"], BinaryIO])
+
+    def test_matches_a_bare_file_hint(self, workdir: Path) -> None:
+        """A hint without format arguments accepts any file of that class."""
+        assert make_file(workdir, "f", "text/plain").match(File)
+
+    def test_checks_the_declared_class(self, workdir: Path) -> None:
+        """A hint for a concrete file class excludes other implementations."""
+        file = make_file(workdir, "f", "application/json")
+        other = OtherFile(mime="application/json", io_type=TextIO)
+
+        assert file.match(LocalFile[Literal["application/json"]])
+        assert not other.match(LocalFile[Literal["application/json"]])
+        assert other.match(File[Literal["application/json"], TextIO])
+
+    def test_rejects_non_file_hints(self, workdir: Path) -> None:
+        """A hint that is not a file never matches."""
+        assert not make_file(workdir, "f", "text/plain").match(dict)
+
+
+class TestTextStreams:
+    """Tests for the text encoding and newline handling."""
+
+    def test_writes_utf8_with_lf_newlines(self, workdir: Path) -> None:
+        """Text is UTF-8 and keeps ``\\n`` on every platform."""
+        file = make_file(workdir, "note", "text/plain", suffix=".txt")
+
+        with cast(TextIO, file.open("w")) as stream:
+            stream.write("héllo\nworld")
+
+        assert file.path.read_bytes() == "héllo\nworld".encode()
+
+    def test_reads_untouched_newlines(self, workdir: Path) -> None:
+        """Reading does not translate line endings."""
+        path = workdir / "note.txt"
+        path.write_bytes(b"a\r\nb")
+
+        with cast(TextIO, LocalFile.from_path(path).open("r")) as stream:
+            assert stream.read() == "a\r\nb"

@@ -2,14 +2,16 @@
 
 from collections.abc import Collection
 from types import GenericAlias, UnionType
-from typing import Any, TypeAliasType, cast, get_origin
+from typing import Any, TypeAliasType, Union, cast, get_args, get_origin
 
 from typing_extensions import TypeForm
 
 from based_datatypes.files import File
+from based_datatypes.types import AnyTypeHint
 from based_datatypes.typing import (
     SingleTypeDef,
     TypeRef,
+    has_type,
     is_subtype,
     typedef_to_typeset,
 )
@@ -55,11 +57,6 @@ __all__ = [
 custom_drivers: dict[SingleTypeDef | UnionType, type[TransportDriver]] = {}
 
 
-def _covers_type(registered: SingleTypeDef | UnionType, obj_type: type) -> bool:
-    """Check whether a registered driver key covers the given object type."""
-    return any(issubclass(obj_type, t) for t in typedef_to_typeset(registered))
-
-
 def _is_type_hint(obj: object) -> bool:
     """Check whether an object is a type hint rather than a value."""
     return (
@@ -68,22 +65,94 @@ def _is_type_hint(obj: object) -> bool:
     )
 
 
-def _supports_lossless(
-    driver: type[TransportDriver], targets: Collection[TypeForm | File] | None
-) -> bool:
-    """Check whether a driver exports losslessly to any of the given targets.
+def _alternatives(registered: SingleTypeDef | UnionType) -> tuple[object, ...]:
+    """Return the union members of a driver key, or the key itself."""
+    if isinstance(registered, UnionType) or get_origin(registered) is Union:
+        return get_args(registered)
 
-    A concrete file target is judged on its MIME type; without targets, or with
-    a bare type hint that cannot name a format, any lossless format the driver
-    declares counts.
+    return (registered,)
+
+
+def _hint_covers(subject: object, registered: SingleTypeDef | UnionType) -> bool:
+    """Check whether a driver key covers a type hint, keeping its arguments."""
+    hint = cast(AnyTypeHint, subject)
+    supertype = cast("SingleTypeDef[Any] | TypeForm[Any]", registered)
+
+    if is_subtype(hint, supertype):
+        return True
+
+    # A bare ``dict`` is not a subtype of ``dict[str, ...]`` even though the
+    # alias describes it, so resolve named aliases to their value's typeset.
+    return isinstance(registered, TypeAliasType) and any(
+        is_subtype(hint, cast("SingleTypeDef[Any] | TypeForm[Any]", member))
+        for member in typedef_to_typeset(registered)
+    )
+
+
+def _value_matches(value: object, hint: object) -> bool:
+    """Check one concrete value against one driver-key alternative.
+
+    Container hints keep their element constraint: a list only matches when
+    every item satisfies the declared element type.
     """
+    origin = get_origin(hint)
+    args = get_args(hint)
+
+    if origin is None:
+        if isinstance(hint, TypeAliasType):
+            return any(_value_matches(value, member) for member in typedef_to_typeset(hint))
+        if isinstance(hint, type):
+            return isinstance(value, hint)
+        return is_subtype(type(value), cast("SingleTypeDef[Any] | TypeForm[Any]", hint))
+
+    if not isinstance(origin, type) or not isinstance(value, origin):
+        return False
+
+    if origin in (list, tuple) and args and args[0] is not Ellipsis:
+        return all(has_type(item, args[0]) for item in cast(Collection[object], value))
+
+    return True
+
+
+def _covers(registered: SingleTypeDef | UnionType, subject: object) -> bool:
+    """Check whether a registered driver key covers a value, type or type hint."""
+    if _is_type_hint(subject):
+        return _hint_covers(subject, registered)
+
+    return any(_value_matches(subject, alternative) for alternative in _alternatives(registered))
+
+
+def _lossless_for(driver: type[TransportDriver], target: object) -> bool:
+    """Check whether a driver round-trips a single target without loss."""
     declared = driver.__lossless_formats__()
-    files = [target for target in targets or () if isinstance(target, File)]
 
-    if not files:
-        return len(declared) > 0
+    if isinstance(target, File):
+        return target.mime in declared
 
-    return any(file.mime in declared for file in files)
+    origin = get_origin(target) or target
+    if isinstance(origin, type) and issubclass(origin, File):
+        args = get_args(target)
+        if args:
+            mimes = get_args(args[0]) or (args[0],)
+            return all(mime in declared for mime in mimes)
+
+    return len(declared) > 0
+
+
+def _matches_lossless(
+    driver: type[TransportDriver],
+    targets: Collection[TypeForm | File] | None,
+    wanted: bool,
+) -> bool:
+    """Check whether the driver is lossless for any of the requested targets.
+
+    Losslessness is judged per target: a driver that is lossless for parquet may
+    still be lossy for CSV, and a mixed target list matches either way.
+    """
+    if targets is None:
+        return (len(driver.__lossless_formats__()) > 0) is wanted
+
+    return any(_lossless_for(driver, target) is wanted for target in targets)
 
 
 def _check_scope(
@@ -123,20 +192,15 @@ def get_transport_driver[U](
     Returns:
         The first matching driver, or ``None`` if no driver applies.
     """
-    obj_types = (
-        typedef_to_typeset(cast(SingleTypeDef, instance))
-        if _is_type_hint(instance)
-        else {type(instance)}
-    )
     effective_scope = scope if scope is not None else current_ser_purpose.get()
 
     candidates = [
         (t, c)
         for t, c in (common_drivers | custom_drivers).items()
-        if any(_covers_type(t, obj_type) for obj_type in obj_types)
+        if _covers(t, instance)
         and effective_scope.matches(c.__transport_scopes__())
         and (targets is None or len(c.transport_types().match_targets(targets)) > 0)
-        and (lossless is None or _supports_lossless(c, targets) is lossless)
+        and (lossless is None or _matches_lossless(c, targets, lossless))
     ]
 
     if len(candidates) == 0:
@@ -151,7 +215,13 @@ def get_transport_driver[U](
 def get_transport_types(src_type: SingleTypeDef | UnionType) -> TransportTypes:
     """Get the transport types for a given type."""
     if is_subtype(src_type, Transportable):
-        return TypeRef(src_type).common_type.__transport_types__()  # pyright: ignore[reportAbstractUsage]
+        common_type = TypeRef(src_type).common_type
+        _check_scope(
+            common_type.__transport_scopes__(),  # pyright: ignore[reportAbstractUsage]
+            common_type.__name__,
+            current_ser_purpose.get(),
+        )
+        return common_type.__transport_types__()  # pyright: ignore[reportAbstractUsage]
 
     driver = get_transport_driver(src_type)
     if driver is not None:
@@ -187,15 +257,21 @@ def import_object[T](source: Any, realm: Realm, annotation: SingleTypeDef[T]) ->
     if is_subtype(annotation, Transportable):
         transportables = [t for t in typedef_to_typeset(annotation) if issubclass(t, Transportable)]
         convertible = [t for t in transportables if t.__transport_types__().match_targets([source])]
+        allowed = [
+            candidate
+            for candidate in convertible
+            if scope.matches(candidate.__transport_scopes__())
+        ]
 
-        if convertible:
-            for candidate in convertible:
-                _check_scope(candidate.__transport_scopes__(), candidate.__name__, scope)
-
+        if allowed:
             return cast(
                 T,
-                convertible[0].__import__(source, realm, cast(SingleTypeDef, annotation)),
+                allowed[0].__import__(source, realm, cast(SingleTypeDef, annotation)),
             )
+
+        if convertible:
+            # The source format is supported, only the scope is not.
+            _check_scope(convertible[0].__transport_scopes__(), convertible[0].__name__, scope)
 
     annotation = cast(SingleTypeDef[T], annotation)  # avoid pyright issue due to type narrowing.
     converter = get_transport_driver(annotation, [source], scope=scope)

@@ -26,6 +26,12 @@ dynamic = ["version"]
 # Serializer implementations for the optional formats the transport layer supports.
 common-transport = [
     "beautifulsoup4>=4.15.0,<5.0.0",
+    # Parquet and Excel backends for the pandas driver.
+    "openpyxl>=3.1.5,<4.0.0",
+    "pyarrow>=21.0.0,<30.0.0",
+    # Excel backends for the polars driver.
+    "fastexcel>=0.14.0,<1.0.0",
+    "xlsxwriter>=3.2.9,<4.0.0",
     "numpy>=2.5.4,<3.0.0",
     "pillow>=13.0.0,<14.0.0",
     "sqlalchemy>=2.1.6,<3.0.0",
@@ -129,7 +135,18 @@ non_dev_dependency_groups = ["app"]
 
 [tool.deptry.per_rule_ignores]
 DEP001 = ["polars"]
-DEP002 = ["ipykernel", "jupyter", "jupytext", "rich"]
+# Optional serializer backends: imported by pandas/polars at runtime, not by this
+# library, so deptry cannot see the usage.
+DEP002 = [
+    "ipykernel",
+    "jupyter",
+    "jupytext",
+    "rich",
+    "openpyxl",
+    "pyarrow",
+    "fastexcel",
+    "xlsxwriter",
+]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]

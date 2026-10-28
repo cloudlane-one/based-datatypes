@@ -422,6 +422,45 @@ def test_cached_method_preserves_function_metadata() -> None:
     assert CachedMethodUser.compute.__doc__ == "Compute a value, recording every real call."
 
 
+class CachedClassMethod:
+    """Class whose cached classmethod result depends on the subclass."""
+
+    value = 1
+
+    @classmethod
+    @cached_method
+    def current(cls) -> int:
+        """Return the class-level value."""
+        return cls.value
+
+
+class CachedClassMethodChild(CachedClassMethod):
+    """Subclass with a different class-level value."""
+
+    value = 2
+
+
+def test_cached_method_classmethod_caches_per_class() -> None:
+    """A subclass does not inherit the parent's classmethod cache."""
+    assert CachedClassMethod.current() == 1
+    assert CachedClassMethodChild.current() == 2
+
+    assert CachedClassMethod.current() == 1
+    assert CachedClassMethodChild.current() == 2
+
+
+def test_cached_method_classmethod_caches_in_own_namespace() -> None:
+    """The cache lives on the class that was called, not on its base."""
+    assert CachedClassMethod.current() == 1
+    assert CachedClassMethodChild.current() == 2
+
+    assert "__current_cache" in vars(CachedClassMethodChild)
+    assert (
+        CachedClassMethodChild.__dict__["__current_cache"]
+        != CachedClassMethod.__dict__["__current_cache"]
+    )
+
+
 def test_cached_method_rejects_unhashable_arguments() -> None:
     """An unhashable argument cannot form a cache key."""
     user = CachedMethodUser()

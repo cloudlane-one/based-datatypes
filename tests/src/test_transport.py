@@ -3,11 +3,16 @@
 import sys
 import xml.etree.ElementTree as xml  # noqa: N813
 from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime
+from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO, Literal, TextIO, cast, get_args
+from uuid import UUID
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from pydantic_core import PydanticSerializationError
 
 from based_datatypes import transport
 from based_datatypes.files import File, LocalDir, LocalFile
@@ -52,6 +57,26 @@ class Record(BaseModel):
 
     name: str
     count: int
+
+
+class Stamped(BaseModel):
+    """Model whose fields need JSON conversion before serialization."""
+
+    when: datetime
+    uid: UUID
+    amount: Decimal
+
+
+class Unserializable:
+    """A value without any serializer."""
+
+
+class UnserializableRecord(BaseModel):
+    """Model whose payload cannot be converted to JSON."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    payload: Unserializable
 
 
 class Point:
@@ -147,6 +172,15 @@ class Doc:
     def __estimate_bytes__(self, target: File[Literal["text/plain"], TextIO], realm: Realm) -> int:
         """Estimate the size of the document text."""
         return len(self.text.encode("utf-8"))
+
+
+class WanDoc(Doc):
+    """Transportable that is declared for wide-area transport."""
+
+    @classmethod
+    def __transport_scopes__(cls) -> frozenset[type[TransportScope]]:
+        """Declare WAN only."""
+        return frozenset({WAN})
 
 
 @pytest.fixture
@@ -415,6 +449,16 @@ class TestGetTransportDriver:
             is JSONTransporter
         )
 
+    def test_container_contents_are_checked(self, workdir: Path) -> None:
+        """A list only selects the SQL driver when it holds statements."""
+        sqla = pytest.importorskip("sqlalchemy")
+        from based_datatypes.transport.common import SQLTransporter
+
+        target = file_for(workdir, "query", "application/sql")
+
+        assert get_transport_driver([1, 2], [target]) is None
+        assert get_transport_driver([sqla.text("select 1")], [target]) is SQLTransporter
+
 
 class TestGetTransportTypes:
     """Tests for :func:`get_transport_types`."""
@@ -440,6 +484,23 @@ class TestGetTransportTypes:
 
         with pytest.raises(TypeError, match="No transport types"):
             get_transport_types(int)
+
+    def test_container_hints_keep_element_types(self) -> None:
+        """A list hint only reports SQL when its element type is a statement."""
+        sqla = pytest.importorskip("sqlalchemy")
+        from based_datatypes.transport.common import SQLTransporter
+
+        assert get_transport_types(list[int]).types == PickleTransporter.transport_types().types
+        assert (
+            get_transport_types(list[sqla.TextClause]).types
+            == SQLTransporter.transport_types().types
+        )
+
+    def test_transportable_scope_is_applied(self) -> None:
+        """Introspection refuses a transportable outside its declared scopes."""
+        with transport_scope(LAN(private_subnet="10.0.0.0/8")):
+            with pytest.raises(ValueError, match="does not support transport scope"):
+                get_transport_types(Doc)
 
 
 class TestCheckTypeAndCast:
@@ -497,6 +558,16 @@ class TestJSONTransporter:
         with pytest.raises(TypeError, match="No driver found"):
             export_object({"a": 1}, file_for(workdir, "a", "text/html"), Realm())
 
+    def test_export_failure_does_not_truncate(self, workdir: Path) -> None:
+        """An unserializable value leaves an existing target untouched."""
+        target = file_for(workdir, "data", "application/json")
+        target.path.write_text('{"keep": true}', encoding="utf-8")
+
+        with pytest.raises(TypeError):
+            export_object({"a": {1, 2}}, target, Realm())  # pyright: ignore[reportArgumentType]
+
+        assert target.path.read_text(encoding="utf-8") == '{"keep": true}'
+
     def test_import_rejects_unsupported_medium(self, workdir: Path) -> None:
         """No parser means a clear ``TypeError``."""
         target = file_for(workdir, "a", "text/html")
@@ -548,6 +619,44 @@ class TestPydanticTransporter:
         with pytest.raises(ValueError, match="Annotation must be provided"):
             PydTransporter.import_object(cast(JSONFile, target), Realm(), None)
 
+    def test_json_native_values_roundtrip(self, workdir: Path) -> None:
+        """Dates, UUIDs and decimals are converted before serialization."""
+        target = file_for(workdir, "record", "application/json")
+        record = Stamped(
+            when=datetime(2026, 1, 2, 3, 4, tzinfo=UTC),
+            uid=UUID("12345678-1234-5678-1234-567812345678"),
+            amount=Decimal("1.50"),
+        )
+
+        export_object(record, target, Realm())
+        restored = import_object(target, Realm(), Stamped)
+
+        assert restored == record
+
+    def test_yaml_native_values_roundtrip(self, workdir: Path) -> None:
+        """The safe dumper accepts the converted values as well."""
+        target = file_for(workdir, "record", "application/yaml")
+        record = Stamped(
+            when=datetime(2026, 1, 2, 3, 4, tzinfo=UTC),
+            uid=UUID("12345678-1234-5678-1234-567812345678"),
+            amount=Decimal("1.50"),
+        )
+
+        export_object(record, target, Realm())
+        restored = import_object(target, Realm(), Stamped)
+
+        assert restored == record
+
+    def test_encoding_failure_does_not_truncate(self, workdir: Path) -> None:
+        """An unserializable model leaves an existing target untouched."""
+        target = file_for(workdir, "record", "application/json")
+        target.path.write_text('{"keep": true}', encoding="utf-8")
+
+        with pytest.raises(PydanticSerializationError):
+            export_object(UnserializableRecord(payload=Unserializable()), target, Realm())
+
+        assert target.path.read_text(encoding="utf-8") == '{"keep": true}'
+
 
 class TestPolarsTransporter:
     """Round trips through the polars driver."""
@@ -574,6 +683,17 @@ class TestPolarsTransporter:
 
         assert restored.equals(frame)
 
+    def test_excel_roundtrip(self, workdir: Path) -> None:
+        """A polars frame survives an Excel round trip."""
+        pl = pytest.importorskip("polars")
+        target = file_for(workdir, "frame", "application/vnd.ms-excel", binary=True)
+        frame = pl.DataFrame({"x": [1, 2]})
+
+        export_object(frame, target, Realm())
+        restored = import_object(target, Realm(), pl.DataFrame)
+
+        assert restored.equals(frame)
+
     def test_unsupported_mime(self, workdir: Path) -> None:
         """An unknown MIME type is refused."""
         pl = pytest.importorskip("polars")
@@ -593,6 +713,28 @@ class TestPandasTransporter:
         """A pandas frame survives a CSV round trip."""
         pd = pytest.importorskip("pandas")
         target = file_for(workdir, "frame", "text/csv")
+        frame = pd.DataFrame({"x": [1, 2]})
+
+        export_object(frame, target, Realm())
+        restored = import_object(target, Realm(), pd.DataFrame)
+
+        assert restored.equals(frame)
+
+    def test_parquet_roundtrip(self, workdir: Path) -> None:
+        """A pandas frame survives a parquet round trip."""
+        pd = pytest.importorskip("pandas")
+        target = file_for(workdir, "frame", "application/vnd.apache.parquet", binary=True)
+        frame = pd.DataFrame({"x": [1, 2], "y": ["a", "b"]})
+
+        export_object(frame, target, Realm())
+        restored = import_object(target, Realm(), pd.DataFrame)
+
+        assert restored.equals(frame)
+
+    def test_excel_roundtrip(self, workdir: Path) -> None:
+        """A pandas frame survives an Excel round trip."""
+        pd = pytest.importorskip("pandas")
+        target = file_for(workdir, "frame", "application/vnd.ms-excel", binary=True)
         frame = pd.DataFrame({"x": [1, 2]})
 
         export_object(frame, target, Realm())
@@ -659,6 +801,19 @@ class TestNumpyTransporter:
         with pytest.raises(ValueError, match="Unsupported MIME type"):
             NpTransporter.import_object(cast(Any, target), Realm(), np.ndarray)
 
+    def test_object_dtype_is_rejected(self, workdir: Path) -> None:
+        """Object arrays would need unpickling to load, so export refuses them."""
+        np = pytest.importorskip("numpy")
+        target = file_for(workdir, "array", "application/x-npy", binary=True)
+        array = np.array([{"a": 1}], dtype=object)
+
+        with pytest.raises(TypeError, match="object dtype"):
+            export_object(array, target, Realm())
+        with pytest.raises(TypeError, match="object dtype"):
+            estimate_bytes(array, target, Realm())
+
+        assert not target.path.exists()
+
 
 class TestImageTransporter:
     """Round trips through the PIL driver."""
@@ -687,6 +842,29 @@ class TestImageTransporter:
                 image_module.new("RGB", (1, 1)), cast(ImageFile, target), Realm()
             )
 
+    def test_source_format_does_not_override_the_target(self, workdir: Path) -> None:
+        """A JPEG loaded from disk is written as PNG for a PNG target."""
+        image_module = pytest.importorskip("PIL.Image")
+        buffer = BytesIO()
+        image_module.new("RGB", (2, 2), "red").save(buffer, format="JPEG")
+        source = image_module.open(BytesIO(buffer.getvalue()))
+
+        assert source.format == "JPEG"
+        target = file_for(workdir, "image", "image/png", binary=True)
+
+        export_object(source, target, Realm())
+
+        assert target.path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+    def test_estimate_accounts_for_bit_depth(self, workdir: Path) -> None:
+        """A float image has four bytes per band, not one."""
+        image_module = pytest.importorskip("PIL.Image")
+        target = file_for(workdir, "image", "image/png", binary=True)
+
+        assert estimate_bytes(image_module.new("F", (4, 3)), target, Realm()) == 4 * 3 * 4
+        assert estimate_bytes(image_module.new("I;16", (4, 3)), target, Realm()) == 4 * 3 * 2
+        assert estimate_bytes(image_module.new("RGB", (4, 3)), target, Realm()) == 4 * 3 * 3
+
 
 class TestXMLTransporter:
     """Round trips through the XML driver."""
@@ -714,6 +892,26 @@ class TestXMLTransporter:
 
         with pytest.raises(ValueError, match="Unsupported MIME type"):
             XMLTransporter.import_object(cast(XMLFile, target), Realm(), xml.ElementTree)
+
+    def test_preserves_comments_and_processing_instructions(self, workdir: Path) -> None:
+        """Comments and PIs survive, as the lossless declaration promises."""
+        target = file_for(workdir, "tree", "application/xml")
+        root = xml.Element("root")
+        xml.SubElement(root, "child").text = "value"
+        root.append(xml.Comment(" a note "))
+        root.append(xml.ProcessingInstruction("target", "data"))
+
+        export_object(xml.ElementTree(root), target, Realm())
+        restored = import_object(target, Realm(), xml.ElementTree)
+
+        restored_root = restored.getroot()
+        assert restored_root is not None
+        tags = [node.tag for node in restored_root]
+        assert xml.Comment in tags
+        assert xml.ProcessingInstruction in tags
+        assert xml.tostring(restored_root, encoding="unicode") == xml.tostring(
+            root, encoding="unicode"
+        )
 
 
 class TestHTMLTransporter:
@@ -761,6 +959,28 @@ class TestSQLTransporter:
             normalize(statement) for statement in statements
         ]
 
+    def test_single_element_list_annotation(self, workdir: Path) -> None:
+        """A one-statement file still imports as the requested list."""
+        sqla = pytest.importorskip("sqlalchemy")
+        target = file_for(workdir, "query", "application/sql")
+
+        export_object([sqla.text("select 1")], target, Realm())
+        restored = import_object(target, Realm(), list[sqla.TextClause])
+
+        assert isinstance(restored, list)
+        assert len(restored) == 1
+
+    def test_tuple_annotation(self, workdir: Path) -> None:
+        """A tuple annotation receives a tuple of statements."""
+        sqla = pytest.importorskip("sqlalchemy")
+        target = file_for(workdir, "queries", "application/sql")
+
+        export_object([sqla.text("select 1"), sqla.text("select 2")], target, Realm())
+        restored = import_object(target, Realm(), tuple[sqla.TextClause, ...])
+
+        assert isinstance(restored, tuple)
+        assert len(restored) == 2
+
 
 class TestTransportableProtocol:
     """Tests for objects implementing the transport protocol."""
@@ -778,6 +998,17 @@ class TestTransportableProtocol:
         restored = import_object(target, Realm(), Doc)
 
         assert isinstance(restored, Doc)
+        assert restored.text == "hello"
+
+    def test_union_import_uses_an_allowed_member(self, workdir: Path) -> None:
+        """A union import picks the member that supports the current scope."""
+        target = file_for(workdir, "doc", "text/plain")
+        export_object(Doc("hello"), target, Realm())
+
+        with transport_scope(LAN(private_subnet="10.0.0.0/8")):
+            restored = import_object(target, Realm(), cast(Any, Doc | WanDoc))
+
+        assert isinstance(restored, WanDoc)
         assert restored.text == "hello"
 
 
@@ -1049,6 +1280,29 @@ class TestLosslessSelection:
         """Without a format to judge, any lossless format the driver has counts."""
         assert get_transport_driver({}, lossless=True) is JSONTransporter
         assert get_transport_driver({}, lossless=False) is None
+
+    def test_mixed_targets_are_judged_per_format(self, workdir: Path) -> None:
+        """A mixed target list matches whichever format satisfies the request."""
+        pd = pytest.importorskip("pandas")
+        from based_datatypes.transport.common import PdTransporter
+
+        frame = pd.DataFrame({"x": [1, 2]})
+        csv = file_for(workdir, "frame", "text/csv")
+        parquet = file_for(workdir, "frame", "application/vnd.apache.parquet", binary=True)
+
+        assert get_transport_driver(frame, [csv, parquet], lossless=False) is PdTransporter
+        assert get_transport_driver(frame, [csv, parquet], lossless=True) is PdTransporter
+
+    def test_format_hints_are_judged_per_format(self, workdir: Path) -> None:
+        """A CSV hint does not count as lossless just because parquet is."""
+        pd = pytest.importorskip("pandas")
+        from based_datatypes.transport.common import PdTransporter
+
+        frame = pd.DataFrame({"x": [1, 2]})
+        csv_hint = File[Literal["text/csv"], TextIO]
+
+        assert get_transport_driver(frame, [csv_hint], lossless=True) is None
+        assert get_transport_driver(frame, [csv_hint], lossless=False) is PdTransporter
 
 
 class TestEstimateBytes:

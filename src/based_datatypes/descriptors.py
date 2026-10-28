@@ -61,10 +61,15 @@ def cached_method[S, R, **P](
 
     @functools.wraps(func)
     def wrapper(self: S, *args: P.args, **kwargs: P.kwargs) -> R:
-        if not hasattr(self, f"__{func.__name__}_cache"):
-            setattr(self, f"__{func.__name__}_cache", {})
+        # ``vars`` is the receiver's own namespace, so a subclass never reuses a
+        # cache an ancestor stored: inherited attributes would hide it from
+        # ``hasattr`` and let classmethod caches leak down the MRO.
+        cache_name = f"__{func.__name__}_cache"
+        namespace = vars(self)
+        if cache_name not in namespace:
+            setattr(self, cache_name, {})
 
-        cache = getattr(self, f"__{func.__name__}_cache")
+        cache: dict[tuple[Any, ...], R] = namespace[cache_name]
         key = (args, frozenset(kwargs.items()))
 
         if key not in cache:
