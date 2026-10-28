@@ -57,7 +57,9 @@ def _resolve_typealias(
     return (
         type_.__value__
         if isinstance(type_, TypeAliasType)
-        else get_args(type_)[0] if get_origin(type_) is Annotated else type_
+        else get_args(type_)[0]
+        if get_origin(type_) is Annotated
+        else type_
     )
 
 

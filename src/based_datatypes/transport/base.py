@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Collection, Generator, Sequence
 from contextlib import contextmanager
@@ -36,6 +37,26 @@ T2 = TypeVar("T2")
 class TransportScope:
     """Base class for the scope of a transport operation."""
 
+    def matches(self, scopes: Collection[type[TransportScope]]) -> bool:
+        """Check whether any declared scope can serve this request.
+
+        A declared scope fulfils the request when it is the same scope or a
+        narrower one: moving data further only ever restricts the formats that
+        may carry it, so a driver that supports WAN payloads also serves an IPC
+        request. An :class:`Open` request imposes no restriction at all, so
+        every declaration satisfies it.
+
+        Args:
+            scopes: The scope classes a driver or transportable declares.
+
+        Returns:
+            ``True`` if one of the declared scopes is this scope or narrower.
+        """
+        if isinstance(self, Open):
+            return True
+
+        return any(issubclass(scope_type, type(self)) for scope_type in scopes)
+
 
 @dataclass(frozen=True)
 class IPC(TransportScope):
@@ -61,6 +82,10 @@ class WAN(LAN):
 @dataclass(frozen=True)
 class Open(TransportScope):
     """No restriction to transport scope, meaning full offline serialization."""
+
+
+ALL_TRANSPORT_SCOPES: frozenset[type[TransportScope]] = frozenset({Open, IPC, LAN, WAN})
+"""Every built-in transport scope, for drivers that can travel anywhere."""
 
 
 current_ser_purpose: ContextVar[TransportScope] = ContextVar("current_ser_purpose", default=Open())
@@ -128,6 +153,16 @@ class Transportable(Protocol[T]):  # pyright: ignore[reportInvalidTypeVarUse]
         ...
 
     @classmethod
+    def __transport_scopes__(cls) -> frozenset[type[TransportScope]]:
+        """Return the transport scopes this class supports.
+
+        The declaration is static; implementations are expected to consult
+        :data:`current_ser_purpose` inside ``__import__`` / ``__export__`` to
+        adapt the payload to the scope actually in effect.
+        """
+        ...
+
+    @classmethod
     def __import__(
         cls: type[U],
         source: T,
@@ -146,6 +181,10 @@ class Transportable(Protocol[T]):  # pyright: ignore[reportInvalidTypeVarUse]
         """Export to the target type or format."""
         ...
 
+    def __estimate_bytes__(self, target: T, realm: Realm) -> int:
+        """Estimate the byte size of exporting this object to ``target``."""
+        ...
+
 
 V = TypeVar("V")
 V2 = TypeVar("V2")
@@ -162,6 +201,28 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
         t = cls.typeargs[V]
         assert not isinstance(t, tuple)
         return t.single_typedef
+
+    @classmethod
+    def __transport_scopes__(cls) -> frozenset[type[TransportScope]]:
+        """Return the transport scopes this driver supports.
+
+        The declaration is static; :meth:`import_object` and
+        :meth:`export_object` are expected to consult
+        :data:`current_ser_purpose` when the payload must depend on the scope
+        actually in effect. The default accepts every built-in scope.
+        """
+        return ALL_TRANSPORT_SCOPES
+
+    @classmethod
+    def __lossless_formats__(cls) -> frozenset[str]:
+        """Return the MIME types this driver round-trips without loss.
+
+        A lossless format reproduces the original object exactly; a lossy one
+        only preserves a reduced representation (CSV drops dtypes, JPEG drops
+        pixel precision). Empty by default, i.e. every format is considered
+        lossy.
+        """
+        return frozenset()
 
     @classmethod
     @cached_method
@@ -204,6 +265,31 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
     ) -> None:
         """Export an object to the target type or format."""
         ...
+
+    @classmethod
+    def estimate_bytes(
+        cls,
+        instance: V,
+        target: T,
+        realm: Realm,
+        annotation: SingleTypeDef[V] | None = None,
+    ) -> int:
+        """Estimate the byte size of exporting ``instance`` to ``target``.
+
+        Drivers override this when they can measure their format cheaply. The
+        default falls back to :func:`sys.getsizeof`, which measures the object
+        in memory rather than the encoded representation.
+
+        Args:
+            instance: The object to be exported.
+            target: The medium the object would be written to.
+            realm: The realm the export would happen in.
+            annotation: The declared type of the object, if any.
+
+        Returns:
+            The estimated number of bytes.
+        """
+        return sys.getsizeof(instance)
 
     @classmethod
     def batch_import(

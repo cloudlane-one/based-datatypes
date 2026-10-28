@@ -14,8 +14,43 @@ from based_datatypes.typing import (
     typedef_to_typeset,
 )
 
-from .base import Realm, Transportable, TransportDriver, TransportTypes
+from .base import (
+    ALL_TRANSPORT_SCOPES,
+    IPC,
+    LAN,
+    WAN,
+    Open,
+    Realm,
+    Transportable,
+    TransportDriver,
+    TransportScope,
+    TransportTypes,
+    current_ser_purpose,
+    transport_scope,
+)
 from .common import common_drivers
+
+__all__ = [
+    "ALL_TRANSPORT_SCOPES",
+    "IPC",
+    "LAN",
+    "Open",
+    "WAN",
+    "Realm",
+    "TransportScope",
+    "TransportTypes",
+    "Transportable",
+    "TransportDriver",
+    "current_ser_purpose",
+    "custom_drivers",
+    "estimate_bytes",
+    "export_object",
+    "get_transport_driver",
+    "get_transport_types",
+    "import_object",
+    "register_transport_driver",
+    "transport_scope",
+]
 
 custom_drivers: dict[SingleTypeDef | UnionType, type[TransportDriver]] = {}
 
@@ -33,8 +68,41 @@ def _is_type_hint(obj: object) -> bool:
     )
 
 
+def _supports_lossless(
+    driver: type[TransportDriver], targets: Collection[TypeForm | File] | None
+) -> bool:
+    """Check whether a driver exports losslessly to any of the given targets.
+
+    A concrete file target is judged on its MIME type; without targets, or with
+    a bare type hint that cannot name a format, any lossless format the driver
+    declares counts.
+    """
+    declared = driver.__lossless_formats__()
+    files = [target for target in targets or () if isinstance(target, File)]
+
+    if not files:
+        return len(declared) > 0
+
+    return any(file.mime in declared for file in files)
+
+
+def _check_scope(
+    supported: frozenset[type[TransportScope]], name: str, scope: TransportScope
+) -> None:
+    """Raise when ``scope`` is not one of the declared scopes."""
+    if scope.matches(supported):
+        return
+
+    names = ", ".join(sorted(scope_type.__name__ for scope_type in supported))
+    raise ValueError(f"{name} does not support transport scope {scope!r}; supported: {names}")
+
+
 def get_transport_driver[U](
-    instance: type[U] | U, targets: Collection[TypeForm | File] | None = None
+    instance: type[U] | U,
+    targets: Collection[TypeForm | File] | None = None,
+    *,
+    scope: TransportScope | None = None,
+    lossless: bool | None = None,
 ) -> type[TransportDriver[U, Any]] | None:
     """Get the transporter for a given type or instance.
 
@@ -45,6 +113,12 @@ def get_transport_driver[U](
             matched on their MIME type and IO type, so the driver for the actual
             format wins; types only narrow by class. ``None`` skips the medium
             check and returns the driver for the object type alone.
+        scope: The transport scope to select for. ``None`` uses the ambient
+            :data:`current_ser_purpose`. A driver declared for a subclass scope
+            (e.g. WAN) also serves a request for its base scope (e.g. IPC).
+        lossless: When ``True``, only drivers that round-trip the target format
+            without loss are eligible; when ``False``, only lossy ones; ``None``
+            accepts either.
 
     Returns:
         The first matching driver, or ``None`` if no driver applies.
@@ -54,12 +128,15 @@ def get_transport_driver[U](
         if _is_type_hint(instance)
         else {type(instance)}
     )
+    effective_scope = scope if scope is not None else current_ser_purpose.get()
 
     candidates = [
         (t, c)
         for t, c in (common_drivers | custom_drivers).items()
         if any(_covers_type(t, obj_type) for obj_type in obj_types)
+        and effective_scope.matches(c.__transport_scopes__())
         and (targets is None or len(c.transport_types().match_targets(targets)) > 0)
+        and (lossless is None or _supports_lossless(c, targets) is lossless)
     ]
 
     if len(candidates) == 0:
@@ -74,50 +151,93 @@ def get_transport_driver[U](
 def get_transport_types(src_type: SingleTypeDef | UnionType) -> TransportTypes:
     """Get the transport types for a given type."""
     if is_subtype(src_type, Transportable):
-        return TypeRef(
-            src_type
-        ).common_type.__transport_types__()  # pyright: ignore[reportAbstractUsage]
+        return TypeRef(src_type).common_type.__transport_types__()  # pyright: ignore[reportAbstractUsage]
 
     driver = get_transport_driver(src_type)
     if driver is not None:
         return driver.transport_types()
 
-    raise TypeError(f"No transport types found for {src_type}")
+    raise TypeError(
+        f"No transport types found for {src_type} under transport scope "
+        f"{current_ser_purpose.get()!r}"
+    )
 
 
 def export_object(obj: Any, target: Any, realm: Realm) -> None:
     """Export an object to a target."""
+    scope = current_ser_purpose.get()
+
     if isinstance(obj, Transportable):
+        _check_scope(obj.__transport_scopes__(), type(obj).__name__, scope)
         return obj.__export__(target, realm)
 
-    driver = get_transport_driver(obj, [target])
+    driver = get_transport_driver(obj, [target], scope=scope)
     if driver is None:
-        raise TypeError(f"No driver found for exporting {type(obj)} to {target}")
+        raise TypeError(
+            f"No driver found for exporting {type(obj)} to {target} under transport scope {scope!r}"
+        )
 
     return driver.export_object(obj, target, realm)
 
 
 def import_object[T](source: Any, realm: Realm, annotation: SingleTypeDef[T]) -> T:
     """Import an object from a source."""
-    if is_subtype(annotation, Transportable):
-        conv = [
-            t
-            for t in typedef_to_typeset(annotation)
-            if issubclass(t, Transportable) and t.__transport_types__().match_targets([source])
-        ]
+    scope = current_ser_purpose.get()
 
-        if len(conv) > 0:
+    if is_subtype(annotation, Transportable):
+        transportables = [t for t in typedef_to_typeset(annotation) if issubclass(t, Transportable)]
+        convertible = [t for t in transportables if t.__transport_types__().match_targets([source])]
+
+        if convertible:
+            for candidate in convertible:
+                _check_scope(candidate.__transport_scopes__(), candidate.__name__, scope)
+
             return cast(
                 T,
-                conv[0].__import__(source, realm, cast(SingleTypeDef, annotation)),
+                convertible[0].__import__(source, realm, cast(SingleTypeDef, annotation)),
             )
 
     annotation = cast(SingleTypeDef[T], annotation)  # avoid pyright issue due to type narrowing.
-    converter = get_transport_driver(annotation, [source])
+    converter = get_transport_driver(annotation, [source], scope=scope)
     if converter is None:
-        raise TypeError(f"No parser found for {type(source)} with annotation {annotation}")
+        raise TypeError(
+            f"No parser found for {type(source)} with annotation {annotation} under "
+            f"transport scope {scope!r}"
+        )
 
     return cast(T, converter.import_object(source, realm, cast(Any, annotation)))
+
+
+def estimate_bytes(obj: Any, target: Any, realm: Realm) -> int:
+    """Estimate how many bytes exporting ``obj`` to ``target`` would produce.
+
+    The estimate is format-aware but never writes to ``target``: drivers measure
+    their own encoding, sampling where a full pass would be too expensive, and
+    fall back to :func:`sys.getsizeof` when the format cannot be measured
+    cheaply.
+
+    Args:
+        obj: The object that would be exported.
+        target: The medium the object would be written to.
+        realm: The realm the export would happen in.
+
+    Returns:
+        The estimated number of bytes.
+    """
+    scope = current_ser_purpose.get()
+
+    if isinstance(obj, Transportable):
+        _check_scope(obj.__transport_scopes__(), type(obj).__name__, scope)
+        return obj.__estimate_bytes__(target, realm)
+
+    driver = get_transport_driver(obj, [target], scope=scope)
+    if driver is None:
+        raise TypeError(
+            f"No driver found for estimating {type(obj)} to {target} under transport "
+            f"scope {scope!r}"
+        )
+
+    return driver.estimate_bytes(obj, target, realm)
 
 
 def register_transport_driver(

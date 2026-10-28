@@ -296,7 +296,8 @@ def test_set_typeargs_rejects_an_unknown_typevar() -> None:
     """A type variable the hint does not use is refused."""
     with pytest.raises(ValueError, match="not a parameter"):
         bt.set_typeargs(
-            list[T], {TypeVar("Other"): int}  # pyright: ignore[reportGeneralTypeIssues]
+            list[T],  # pyright: ignore[reportGeneralTypeIssues]
+            {TypeVar("Other"): int},
         )
 
 
@@ -425,7 +426,8 @@ def test_typeref_typeform_substitutes_typevars() -> None:
     """A free type variable is replaced in the resolved typeform."""
     assert (
         TypeRef(
-            list[T], subs={T: TypeRef(int)}  # pyright: ignore[reportGeneralTypeIssues]
+            list[T],  # pyright: ignore[reportGeneralTypeIssues]
+            subs={T: TypeRef(int)},
         ).typeform
         == list[int]
     )

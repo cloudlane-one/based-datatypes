@@ -1,5 +1,6 @@
 """Tests for the :mod:`based_datatypes.transport` subpackage."""
 
+import sys
 import xml.etree.ElementTree as xml  # noqa: N813
 from dataclasses import FrozenInstanceError
 from pathlib import Path
@@ -11,6 +12,8 @@ from pydantic import BaseModel
 from based_datatypes import transport
 from based_datatypes.files import File, LocalDir, LocalFile
 from based_datatypes.transport import (
+    ALL_TRANSPORT_SCOPES,
+    estimate_bytes,
     export_object,
     get_transport_driver,
     get_transport_types,
@@ -34,6 +37,7 @@ from based_datatypes.transport.base import (
 from based_datatypes.transport.common import (
     JSONFile,
     JSONTransporter,
+    PickleFile,
     PickleTransporter,
     PlTransporter,
     PydTransporter,
@@ -94,6 +98,15 @@ class PointDriver(TransportDriver[Point, PointFile]):
             stream.write(f"{instance.x},{instance.y}")
 
 
+class WanPointDriver(PointDriver):
+    """Custom driver that is only declared for wide-area transport."""
+
+    @classmethod
+    def __transport_scopes__(cls) -> frozenset[type[TransportScope]]:
+        """Declare the deepest subclass of the scope hierarchy, WAN only."""
+        return frozenset({WAN})
+
+
 class Doc:
     """Object implementing the transport protocol itself."""
 
@@ -125,6 +138,15 @@ class Doc:
         """Write the document as text."""
         with target.open("w") as stream:
             stream.write(self.text)
+
+    @classmethod
+    def __transport_scopes__(cls) -> frozenset[type[TransportScope]]:
+        """Documents only travel offline."""
+        return frozenset({Open})
+
+    def __estimate_bytes__(self, target: File[Literal["text/plain"], TextIO], realm: Realm) -> int:
+        """Estimate the size of the document text."""
+        return len(self.text.encode("utf-8"))
 
 
 @pytest.fixture
@@ -787,3 +809,380 @@ class TestCustomDrivers:
         restored = import_object(target, Realm(), Point)
 
         assert restored == Point(1.5, 2.5)
+
+    def test_estimate_falls_back_to_object_size(self, workdir: Path) -> None:
+        """A driver without a format estimate reports the object's memory size."""
+        register_transport_driver(Point, PointDriver)
+        point = Point(1, 2)
+
+        estimated = estimate_bytes(point, file_for(workdir, "point", "text/plain"), Realm())
+
+        assert estimated == sys.getsizeof(point)
+
+
+class TestTransportScopeSelection:
+    """Tests for the transport scope as a driver selection criterion."""
+
+    def test_builtin_declarations(self) -> None:
+        """Only pickle narrows the built-in scope declaration."""
+        assert JSONTransporter.__transport_scopes__() == ALL_TRANSPORT_SCOPES
+        assert PlTransporter.__transport_scopes__() == ALL_TRANSPORT_SCOPES
+        assert PickleTransporter.__transport_scopes__() == frozenset({Open, IPC})
+
+    def test_matching_admits_narrower_scopes(self) -> None:
+        """A declared scope serves the same or a broader request."""
+        lan = LAN(private_subnet="10.0.0.0/8")
+        wan = WAN(private_subnet="10.0.0.0/8")
+
+        assert lan.matches(ALL_TRANSPORT_SCOPES)
+        assert not lan.matches({IPC}), "IPC is broader than the LAN request"
+        assert not wan.matches({LAN}), "LAN is broader than the WAN request"
+        assert not IPC().matches({Open}), "Open is not an IPC transport"
+
+        assert IPC().matches({WAN}), "a WAN driver can serve an IPC request"
+        assert LAN(private_subnet="10.0.0.0/8").matches({WAN})
+        assert wan.matches({WAN})
+
+    def test_open_imposes_no_restriction(self) -> None:
+        """An offline request accepts every driver declaration."""
+        assert Open().matches({Open})
+        assert Open().matches({IPC})
+        assert Open().matches({WAN})
+
+    def test_custom_scope_serves_a_broader_request(self) -> None:
+        """A scope subclass is narrower than the scope it extends."""
+
+        class Cluster(LAN):
+            """A LAN-like scope that is not one of the built-ins."""
+
+        assert not Cluster(private_subnet="10.0.0.0/8").matches({LAN})
+        assert LAN(private_subnet="10.0.0.0/8").matches({Cluster})
+        assert Cluster(private_subnet="10.0.0.0/8").matches({Cluster})
+
+    def test_narrower_driver_serves_a_broader_request(
+        self, workdir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A driver declaring WAN is selectable for an IPC request."""
+        monkeypatch.setattr(transport, "custom_drivers", {})
+        register_transport_driver(Point, WanPointDriver)
+        target = file_for(workdir, "point", "text/plain")
+
+        assert get_transport_driver(Point(1, 2), [target], scope=IPC()) is WanPointDriver
+
+        with transport_scope(WAN(private_subnet="10.0.0.0/8")):
+            assert get_transport_driver(Point(1, 2), [target]) is WanPointDriver
+
+    def test_pickle_is_rejected_beyond_ipc(self, workdir: Path) -> None:
+        """Pickle is not selectable once data crosses a machine boundary."""
+        target = file_for(workdir, "data", "application/pickle", binary=True)
+
+        assert get_transport_driver({}, [target]) is PickleTransporter
+
+        for scope in (LAN(private_subnet="10.0.0.0/8"), WAN(private_subnet="10.0.0.0/8")):
+            with transport_scope(scope):
+                assert get_transport_driver({}, [target]) is None
+
+        with transport_scope(IPC()):
+            assert get_transport_driver({}, [target]) is PickleTransporter
+
+    def test_text_formats_survive_every_scope(self, workdir: Path) -> None:
+        """JSON stays selectable for LAN and WAN payloads."""
+        target = file_for(workdir, "data", "application/json")
+
+        for scope in (IPC(), LAN(private_subnet="10.0.0.0/8"), WAN(private_subnet="10.0.0.0/8")):
+            with transport_scope(scope):
+                assert get_transport_driver({}, [target]) is JSONTransporter
+
+    def test_explicit_scope_overrides_the_ambient_one(self, workdir: Path) -> None:
+        """The ``scope`` argument takes precedence over the context variable."""
+        target = file_for(workdir, "data", "application/pickle", binary=True)
+
+        with transport_scope(LAN(private_subnet="10.0.0.0/8")):
+            assert get_transport_driver({}, [target], scope=IPC()) is PickleTransporter
+
+    def test_export_reports_the_scope(self, workdir: Path) -> None:
+        """A scope-filtered export explains why no driver applied."""
+        target = file_for(workdir, "data", "application/pickle", binary=True)
+
+        with transport_scope(LAN(private_subnet="10.0.0.0/8")):
+            with pytest.raises(TypeError, match="scope LAN"):
+                export_object({"a": 1}, target, Realm())
+
+    def test_import_and_estimate_report_the_scope(self, workdir: Path) -> None:
+        """Import and estimate fail the same way as export."""
+        target = file_for(workdir, "data", "application/pickle", binary=True)
+        export_object({"a": 1}, target, Realm())
+
+        with transport_scope(LAN(private_subnet="10.0.0.0/8")):
+            with pytest.raises(TypeError, match="scope LAN"):
+                import_object(target, Realm(), dict)
+            with pytest.raises(TypeError, match="scope LAN"):
+                estimate_bytes({"a": 1}, target, Realm())
+
+    def test_driver_refuses_the_scope_dynamically(self, workdir: Path) -> None:
+        """A direct driver call re-checks the scope instead of trusting selection."""
+        target = file_for(workdir, "data", "application/pickle", binary=True)
+        export_object({"a": 1}, target, Realm())
+
+        with transport_scope(WAN(private_subnet="10.0.0.0/8")):
+            with pytest.raises(ValueError, match="Refusing to transport pickle"):
+                PickleTransporter.import_object(cast(PickleFile, target), Realm(), dict)
+
+    def test_get_transport_types_reports_the_scope(self) -> None:
+        """Type introspection only reports formats usable in the current scope."""
+        assert get_transport_types(int).types == PickleTransporter.transport_types().types
+
+        with transport_scope(LAN(private_subnet="10.0.0.0/8")):
+            with pytest.raises(TypeError, match="scope LAN"):
+                get_transport_types(int)
+
+    def test_transportable_scope_is_enforced(self, workdir: Path) -> None:
+        """A transportable declaring narrower scopes is refused outside them."""
+        target = file_for(workdir, "doc", "text/plain")
+        doc = Doc("hello")
+
+        assert Doc.__transport_scopes__() == frozenset({Open})
+
+        with transport_scope(LAN(private_subnet="10.0.0.0/8")):
+            for call in (
+                lambda: export_object(doc, target, Realm()),
+                lambda: import_object(target, Realm(), Doc),
+                lambda: estimate_bytes(doc, target, Realm()),
+            ):
+                with pytest.raises(ValueError, match="does not support transport scope"):
+                    call()
+
+
+class TestLosslessSelection:
+    """Tests for the lossless flag as a driver selection criterion."""
+
+    def test_pickle_is_lossless(self, workdir: Path) -> None:
+        """Pickle reproduces the object exactly."""
+        target = file_for(workdir, "data", "application/pickle", binary=True)
+
+        assert get_transport_driver({}, [target], lossless=True) is PickleTransporter
+        assert get_transport_driver({}, [target], lossless=False) is None
+
+    def test_json_is_lossless_yaml_too(self, workdir: Path) -> None:
+        """Both JSON and YAML are declared lossless."""
+        assert JSONTransporter.__lossless_formats__() == {
+            "application/json",
+            "application/yaml",
+        }
+        assert (
+            get_transport_driver({}, [file_for(workdir, "a", "application/yaml")], lossless=True)
+            is JSONTransporter
+        )
+
+    def test_xml_is_lossless(self, workdir: Path) -> None:
+        """The element tree survives serialization."""
+        target = file_for(workdir, "tree", "application/xml")
+
+        assert get_transport_driver(xml.ElementTree(), [target], lossless=True) is not None
+
+    def test_dataframes_split_by_format(self, workdir: Path) -> None:
+        """Parquet is lossless while CSV is not, inside the same driver."""
+        pd = pytest.importorskip("pandas")
+        from based_datatypes.transport.common import PdTransporter
+
+        frame = pd.DataFrame({"x": [1, 2]})
+        csv = file_for(workdir, "frame", "text/csv")
+        parquet = file_for(workdir, "frame", "application/vnd.apache.parquet", binary=True)
+
+        assert get_transport_driver(frame, [csv], lossless=True) is None
+        assert get_transport_driver(frame, [csv], lossless=False) is PdTransporter
+        assert get_transport_driver(frame, [parquet], lossless=True) is PdTransporter
+        assert get_transport_driver(frame, [parquet], lossless=False) is None
+
+    def test_polars_dataframes_split_by_format(self, workdir: Path) -> None:
+        """The polars driver makes the same distinction."""
+        pl = pytest.importorskip("polars")
+        from based_datatypes.transport.common import PlTransporter
+
+        frame = pl.DataFrame({"x": [1, 2]})
+        csv = file_for(workdir, "frame", "text/csv")
+        parquet = file_for(workdir, "frame", "application/vnd.apache.parquet", binary=True)
+
+        assert get_transport_driver(frame, [csv], lossless=True) is None
+        assert get_transport_driver(frame, [csv], lossless=False) is PlTransporter
+        assert get_transport_driver(frame, [parquet], lossless=True) is PlTransporter
+
+    def test_numpy_split_by_format(self, workdir: Path) -> None:
+        """Native numpy formats are lossless, CSV is not."""
+        np = pytest.importorskip("numpy")
+        from based_datatypes.transport.common import NpTransporter
+
+        array = np.array([1.0, 2.0])
+        npy = file_for(workdir, "array", "application/x-npy", binary=True)
+        csv = file_for(workdir, "array", "text/csv")
+
+        assert get_transport_driver(array, [npy], lossless=True) is NpTransporter
+        assert get_transport_driver(array, [csv], lossless=True) is None
+        assert get_transport_driver(array, [csv], lossless=False) is NpTransporter
+
+    def test_images_split_by_format(self, workdir: Path) -> None:
+        """PNG is lossless, JPEG is not."""
+        image_module = pytest.importorskip("PIL.Image")
+        from based_datatypes.transport.common import ImageTransporter
+
+        image = image_module.new("RGB", (2, 2))
+        png = file_for(workdir, "image", "image/png", binary=True)
+        jpeg = file_for(workdir, "image", "image/jpeg", binary=True)
+
+        assert get_transport_driver(image, [png], lossless=True) is ImageTransporter
+        assert get_transport_driver(image, [jpeg], lossless=True) is None
+        assert get_transport_driver(image, [jpeg], lossless=False) is ImageTransporter
+
+    def test_custom_driver_defaults_to_lossy(
+        self, workdir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A driver that declares no lossless format only matches ``lossless=False``."""
+        monkeypatch.setattr(transport, "custom_drivers", {})
+        register_transport_driver(Point, PointDriver)
+        target = file_for(workdir, "point", "text/plain")
+
+        assert PointDriver.__lossless_formats__() == frozenset()
+        assert get_transport_driver(Point(1, 2), [target], lossless=True) is None
+        assert get_transport_driver(Point(1, 2), [target], lossless=False) is PointDriver
+
+    def test_type_targets_use_any_lossless_format(self) -> None:
+        """Without a format to judge, any lossless format the driver has counts."""
+        assert get_transport_driver({}, lossless=True) is JSONTransporter
+        assert get_transport_driver({}, lossless=False) is None
+
+
+class TestEstimateBytes:
+    """Tests for :func:`based_datatypes.transport.estimate_bytes`."""
+
+    def test_json_is_exact(self, workdir: Path) -> None:
+        """The JSON estimate equals the encoded file content."""
+        target = file_for(workdir, "data", "application/json")
+        payload = {"a": 1, "b": [1, 2], "text": "héllo"}
+
+        estimated = estimate_bytes(payload, target, Realm())
+
+        assert not target.path.exists()
+        export_object(payload, target, Realm())
+        assert estimated == len(target.path.read_text(encoding="utf-8").encode("utf-8"))
+
+    def test_yaml_is_exact(self, workdir: Path) -> None:
+        """The YAML estimate equals the encoded file content."""
+        target = file_for(workdir, "data", "application/yaml")
+        payload = {"a": 1, "text": "héllo"}
+
+        estimated = estimate_bytes(payload, target, Realm())
+        export_object(payload, target, Realm())
+
+        assert estimated == len(target.path.read_text(encoding="utf-8").encode("utf-8"))
+
+    def test_pickle_is_exact(self, workdir: Path) -> None:
+        """The pickle estimate equals the written payload."""
+        target = file_for(workdir, "data", "application/pickle", binary=True)
+        payload = {"a": 1, "b": [1, 2]}
+
+        estimated = estimate_bytes(payload, target, Realm())
+        export_object(payload, target, Realm())
+
+        assert estimated == target.path.stat().st_size
+
+    def test_xml_is_exact(self, workdir: Path) -> None:
+        """The XML estimate equals the written document."""
+        target = file_for(workdir, "tree", "application/xml")
+        root = xml.Element("root")
+        xml.SubElement(root, "child").text = "value"
+
+        estimated = estimate_bytes(xml.ElementTree(root), target, Realm())
+        export_object(xml.ElementTree(root), target, Realm())
+
+        assert estimated == len(target.path.read_text(encoding="utf-8").encode("utf-8"))
+
+    def test_sql_is_exact(self, workdir: Path) -> None:
+        """The SQL estimate equals the formatted statements."""
+        sqla = pytest.importorskip("sqlalchemy")
+        target = file_for(workdir, "query", "application/sql")
+        statements = [sqla.text("select 1"), sqla.text("delete from t")]
+
+        estimated = estimate_bytes(statements, target, Realm())
+        export_object(statements, target, Realm())
+
+        assert estimated == len(target.path.read_text(encoding="utf-8").encode("utf-8"))
+
+    def test_html_is_exact(self, workdir: Path) -> None:
+        """The HTML estimate equals the serialized soup."""
+        bs4 = pytest.importorskip("bs4")
+        target = file_for(workdir, "page", "text/html")
+        soup = bs4.BeautifulSoup("<p>hi</p>", "html.parser")
+
+        estimated = estimate_bytes(soup, target, Realm())
+        export_object(soup, target, Realm())
+
+        assert estimated == len(target.path.read_text(encoding="utf-8").encode("utf-8"))
+
+    def test_pydantic_json_is_exact(self, workdir: Path) -> None:
+        """The pydantic estimate equals the serialized model."""
+        target = file_for(workdir, "record", "application/json")
+        record = Record(name="a", count=2)
+
+        estimated = estimate_bytes(record, target, Realm())
+        export_object(record, target, Realm())
+
+        assert estimated == len(target.path.read_text(encoding="utf-8").encode("utf-8"))
+
+    def test_numpy_npy_is_exact(self, workdir: Path) -> None:
+        """An npy file is the payload plus its fixed header."""
+        np = pytest.importorskip("numpy")
+        target = file_for(workdir, "array", "application/x-npy", binary=True)
+        array = np.array([1.0, 2.0])
+
+        estimated = estimate_bytes(array, target, Realm())
+        export_object(array, target, Realm())
+
+        assert estimated == target.path.stat().st_size
+
+    def test_pandas_csv_is_close(self, workdir: Path) -> None:
+        """The sampled CSV estimate is within ten percent of the file."""
+        pd = pytest.importorskip("pandas")
+        target = file_for(workdir, "frame", "text/csv")
+        frame = pd.DataFrame({"x": range(250), "y": ["value"] * 250})
+
+        estimated = estimate_bytes(frame, target, Realm())
+        export_object(frame, target, Realm())
+        actual = target.path.stat().st_size
+
+        assert abs(estimated - actual) / actual < 0.1
+
+    def test_polars_csv_is_close(self, workdir: Path) -> None:
+        """The sampled CSV estimate is within ten percent of the file."""
+        pl = pytest.importorskip("polars")
+        target = file_for(workdir, "frame", "text/csv")
+        frame = pl.DataFrame({"x": range(250), "y": ["value"] * 250})
+
+        estimated = estimate_bytes(frame, target, Realm())
+        export_object(frame, target, Realm())
+        actual = target.path.stat().st_size
+
+        assert abs(estimated - actual) / actual < 0.1
+
+    def test_image_is_the_uncompressed_pixel_payload(self, workdir: Path) -> None:
+        """An image estimate is the uncompressed pixel payload."""
+        image_module = pytest.importorskip("PIL.Image")
+        target = file_for(workdir, "image", "image/png", binary=True)
+        image = image_module.new("RGB", (4, 3), "red")
+
+        estimated = estimate_bytes(image, target, Realm())
+
+        assert estimated == 4 * 3 * 3
+        assert not target.path.exists()
+
+    def test_transportable_estimate_is_used(self, workdir: Path) -> None:
+        """The protocol method wins over driver selection."""
+        doc = Doc("héllo")
+
+        assert estimate_bytes(doc, file_for(workdir, "doc", "text/plain"), Realm()) == len(
+            "héllo".encode()
+        )
+
+    def test_unknown_target_raises(self, workdir: Path) -> None:
+        """Estimating an unsupported medium fails loudly."""
+        with pytest.raises(TypeError, match="No driver found for estimating"):
+            estimate_bytes({"a": 1}, file_for(workdir, "page", "text/html"), Realm())

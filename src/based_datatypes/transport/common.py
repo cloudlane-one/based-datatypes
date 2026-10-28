@@ -16,7 +16,7 @@ import yaml
 from based_datatypes.files import File
 from based_datatypes.typing import SingleTypeDef, has_type
 
-from .base import V2, TransportDriver
+from .base import IPC, V2, Open, TransportDriver, TransportScope, current_ser_purpose
 
 common_drivers: dict[SingleTypeDef | UnionType, type[TransportDriver]] = {}
 
@@ -58,8 +58,48 @@ def check_type_and_cast[T](obj: Any, annotation: SingleTypeDef[T] | None = None)
     return cast(T, obj)
 
 
+def _encoded_size(text: str) -> int:
+    """Return the UTF-8 encoded size of ``text``."""
+    return len(text.encode("utf-8"))
+
+
+def _sample_step(total: int, limit: int = 100) -> int:
+    """Return a stride that yields at most ``limit`` evenly spread rows.
+
+    Sampling by stride rather than by head avoids a systematic bias on sorted
+    data, where the first rows are unrepresentatively narrow.
+
+    Args:
+        total: The number of rows in the frame.
+        limit: The maximum number of rows to sample.
+
+    Returns:
+        The stride, at least ``1``.
+    """
+    return max(total // limit, 1)
+
+
 class JSONTransporter(TransportDriver[JSONDict, JSONFile]):
     """Transporter for JSON and YAML dictionaries."""
+
+    @classmethod
+    def __lossless_formats__(cls) -> frozenset[str]:
+        """JSON and YAML reproduce a JSON-shaped dictionary exactly."""
+        return frozenset({"application/json", "application/yaml"})
+
+    @classmethod
+    def estimate_bytes(
+        cls,
+        instance: JSONDict,
+        target: JSONFile,
+        realm: Any,
+        annotation: SingleTypeDef[JSONDict] | None = None,
+    ) -> int:
+        """Measure the encoded dictionary without writing it."""
+        if target.mime == "application/yaml":
+            return _encoded_size(yaml.safe_dump(instance, allow_unicode=True))
+
+        return _encoded_size(json.dumps(instance, indent=2))
 
     @classmethod
     def import_object(
@@ -113,6 +153,26 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
     """Transporter for XML ElementTree."""
 
     @classmethod
+    def __lossless_formats__(cls) -> frozenset[str]:
+        """The serialized tree preserves every element and attribute."""
+        return frozenset({"application/xml", "text/xml"})
+
+    @classmethod
+    def estimate_bytes(
+        cls,
+        instance: xml.ElementTree,
+        target: XMLFile,
+        realm: Any,
+        annotation: SingleTypeDef[xml.ElementTree] | None = None,
+    ) -> int:
+        """Measure the serialized tree without writing it."""
+        root = instance.getroot()
+        if root is None:
+            return 0
+
+        return _encoded_size(xml.tostring(root, encoding="unicode"))
+
+    @classmethod
     def import_object(
         cls: type[TransportDriver[V2, XMLFile]],
         source: XMLFile,
@@ -151,6 +211,21 @@ try:
 
     class PydTransporter(TransportDriver[pyd.BaseModel, JSONFile]):
         """Transporter for Pydantic models."""
+
+        @classmethod
+        def estimate_bytes(
+            cls,
+            instance: pyd.BaseModel,
+            target: JSONFile,
+            realm: Any,
+            annotation: SingleTypeDef[pyd.BaseModel] | None = None,
+        ) -> int:
+            """Measure the serialized model without writing it."""
+            data = instance.model_dump()
+            if target.mime == "application/yaml":
+                return _encoded_size(yaml.safe_dump(data, allow_unicode=True))
+
+            return _encoded_size(json.dumps(data, indent=2))
 
         @classmethod
         def import_object(
@@ -207,6 +282,30 @@ try:
         """Transporter for Pandas DataFrames."""
 
         @classmethod
+        def __lossless_formats__(cls) -> frozenset[str]:
+            """Parquet keeps dtypes and values; CSV and Excel do not."""
+            return frozenset({"application/vnd.apache.parquet"})
+
+        @classmethod
+        def estimate_bytes(
+            cls,
+            instance: pd.DataFrame,
+            target: DfFile,
+            realm: Any,
+            annotation: SingleTypeDef[pd.DataFrame] | None = None,
+        ) -> int:
+            """Estimate the encoded size, sampling CSV output by row."""
+            if target.mime == "text/csv":
+                total = len(instance)
+                if total == 0:
+                    return 0
+
+                sample = instance.iloc[:: _sample_step(total)]
+                return int(_encoded_size(sample.to_csv(index=False)) * total / len(sample))
+
+            return int(instance.memory_usage(deep=True).sum())
+
+        @classmethod
         def import_object(
             cls: type[TransportDriver[V2, DfFile]],
             source: DfFile,
@@ -257,6 +356,30 @@ except ImportError:
 
 class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
     """Transporter for Polars DataFrames."""
+
+    @classmethod
+    def __lossless_formats__(cls) -> frozenset[str]:
+        """Parquet keeps dtypes and values; CSV and Excel do not."""
+        return frozenset({"application/vnd.apache.parquet"})
+
+    @classmethod
+    def estimate_bytes(
+        cls,
+        instance: pl.DataFrame,
+        target: DfFile,
+        realm: Any,
+        annotation: SingleTypeDef[pl.DataFrame] | None = None,
+    ) -> int:
+        """Estimate the encoded size, sampling CSV output by row."""
+        if target.mime == "text/csv":
+            total = instance.height
+            if total == 0:
+                return 0
+
+            sample = instance.gather_every(_sample_step(total))
+            return int(_encoded_size(sample.write_csv()) * total / sample.height)
+
+        return int(instance.estimated_size())
 
     @classmethod
     def import_object(
@@ -318,6 +441,26 @@ try:
         """Transporter for NumPy arrays."""
 
         @classmethod
+        def __lossless_formats__(cls) -> frozenset[str]:
+            """The native formats keep dtype, shape and values; CSV does not."""
+            return frozenset({"application/x-npy", "application/x-npz"})
+
+        @classmethod
+        def estimate_bytes(
+            cls,
+            instance: np.ndarray,
+            target: NpFile,
+            realm: Any,
+            annotation: SingleTypeDef[np.ndarray] | None = None,
+        ) -> int:
+            """Estimate the encoded size from the array's memory footprint."""
+            if target.mime == "application/x-npy":
+                # The ``.npy`` format prepends a fixed 128-byte header.
+                return instance.nbytes + 128
+
+            return instance.nbytes
+
+        @classmethod
         def import_object(
             cls: type[TransportDriver[V2, NpFile]],
             source: NpFile,
@@ -370,8 +513,35 @@ try:
 
     type SQLFile = File[Literal["application/sql"], TextIO]
 
+    def _format_statements(
+        instance: sqla.Executable | Iterable[sqla.Executable],
+    ) -> list[str]:
+        """Format statements the way they are written to disk.
+
+        Args:
+            instance: One statement or an iterable of statements.
+
+        Returns:
+            The formatted statement texts.
+        """
+        statements = [instance] if isinstance(instance, sqla.Executable) else instance
+        return [
+            sqlparse.format(str(stmt), reindent=True, keyword_case="upper") for stmt in statements
+        ]
+
     class SQLTransporter(TransportDriver[sqla.Executable | Iterable[sqla.Executable], SQLFile]):
         """Transporter for SQL statements."""
+
+        @classmethod
+        def estimate_bytes(
+            cls,
+            instance: sqla.Executable | Iterable[sqla.Executable],
+            target: SQLFile,
+            realm: Any,
+            annotation: SingleTypeDef[sqla.Executable | Iterable[sqla.Executable]] | None = None,
+        ) -> int:
+            """Measure the formatted statements without writing them."""
+            return _encoded_size(";\n\n".join(_format_statements(instance)))
 
         @classmethod
         def import_object(
@@ -398,17 +568,16 @@ try:
             annotation: SingleTypeDef[sqla.Executable | Iterable[sqla.Executable]] | None = None,
         ) -> None:
             """Convert an SQL statement to a file."""
-            if isinstance(instance, sqla.Executable):
-                instance = [instance]
-
-            formatted = [
-                sqlparse.format(str(stmt), reindent=True, keyword_case="upper") for stmt in instance
-            ]
+            formatted = _format_statements(instance)
 
             with target.open("w") as f:
                 f.write(";\n\n".join(formatted))
 
-    common_drivers[sqla.Executable | Iterable[sqla.Executable]] = SQLTransporter
+    # Registered for the concrete containers rather than ``Iterable``: the key is
+    # matched by concrete type, and a bare ``Iterable`` would claim mappings too.
+    common_drivers[sqla.Executable | list[sqla.Executable] | tuple[sqla.Executable, ...]] = (
+        SQLTransporter
+    )
 except ImportError:
     pass
 
@@ -432,6 +601,26 @@ try:
 
     class ImageTransporter(TransportDriver[Image.Image, ImageFile]):
         """Transporter for PIL Images."""
+
+        @classmethod
+        def __lossless_formats__(cls) -> frozenset[str]:
+            """PNG, TIFF and BMP are lossless; JPEG, GIF and WebP are not."""
+            return frozenset({"image/png", "image/tiff", "image/bmp"})
+
+        @classmethod
+        def estimate_bytes(
+            cls,
+            instance: Image.Image,
+            target: ImageFile,
+            realm: Any,
+            annotation: SingleTypeDef[Image.Image] | None = None,
+        ) -> int:
+            """Estimate the uncompressed pixel payload.
+
+            Container overhead and compression are not modelled, so the result
+            can be smaller than a tiny compressed file.
+            """
+            return instance.width * instance.height * len(instance.getbands())
 
         @classmethod
         def import_object(
@@ -484,6 +673,17 @@ try:
         """Transporter for BeautifulSoup HTML."""
 
         @classmethod
+        def estimate_bytes(
+            cls,
+            instance: BeautifulSoup,
+            target: HTMLFile,
+            realm: Any,
+            annotation: SingleTypeDef[BeautifulSoup] | None = None,
+        ) -> int:
+            """Measure the serialized soup without writing it."""
+            return _encoded_size(str(instance))
+
+        @classmethod
         def import_object(
             cls: type[TransportDriver[V2, HTMLFile]],
             source: HTMLFile,
@@ -525,6 +725,39 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
     """Transporter for Pickle files."""
 
     @classmethod
+    def __transport_scopes__(cls) -> frozenset[type[TransportScope]]:
+        """Pickles are machine-specific and unsafe to load from the network."""
+        return frozenset({Open, IPC})
+
+    @classmethod
+    def __lossless_formats__(cls) -> frozenset[str]:
+        """Pickle reproduces the object exactly."""
+        return frozenset({"application/pickle"})
+
+    @classmethod
+    def _require_supported_scope(cls) -> None:
+        """Refuse payloads that must cross a process or network boundary."""
+        scope = current_ser_purpose.get()
+        if scope.matches(cls.__transport_scopes__()):
+            return
+
+        raise ValueError(
+            f"Refusing to transport pickle data under transport scope {scope!r}; "
+            "pickle is only supported for Open and IPC"
+        )
+
+    @classmethod
+    def estimate_bytes(
+        cls,
+        instance: Any,
+        target: PickleFile,
+        realm: Any,
+        annotation: SingleTypeDef[Any] | None = None,
+    ) -> int:
+        """Measure the pickle payload without writing it."""
+        return len(pickle.dumps(instance))
+
+    @classmethod
     def import_object(
         cls: type[TransportDriver[V2, PickleFile]],
         source: PickleFile,
@@ -532,6 +765,11 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
         annotation: SingleTypeDef[V2] | None = None,
     ) -> V2:
         """Parse an object from a Pickle file."""
+        # Unpickling executes arbitrary code, so it is deliberately restricted to
+        # the Open and IPC scopes (see ``__transport_scopes__``) and re-checked
+        # here for callers that bypass driver selection.
+        PickleTransporter._require_supported_scope()
+
         with source.open("r") as f:
             obj = pickle.load(f)
 
@@ -546,6 +784,8 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
         annotation: SingleTypeDef[Any] | None = None,
     ) -> None:
         """Convert an object to a Pickle file."""
+        PickleTransporter._require_supported_scope()
+
         with target.open("w") as f:
             pickle.dump(instance, f)
 
