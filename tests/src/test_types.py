@@ -147,12 +147,6 @@ def test_ordinal_alias_covers_scalar_ordered_types() -> None:
     } <= members
 
 
-def test_annotation_scan_type_and_single_typedef_exist() -> None:
-    """The public aliases are usable as type hints."""
-    assert types.AnnotationScanType is not None
-    assert types.SingleTypeDef[int] is not None
-
-
 def test_generic_alias_protocol_recognises_parameterised_generics() -> None:
     """``GenericAlias`` matches ``list[int]`` but not the bare class."""
     assert isinstance(list[int], types.GenericAlias)

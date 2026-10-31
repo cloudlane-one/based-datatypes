@@ -7,6 +7,7 @@ from decimal import Decimal
 from enum import auto
 from types import UnionType
 from typing import (
+    Annotated,
     Any,
     ClassVar,
     ForwardRef,
@@ -22,7 +23,7 @@ from typing import (
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
-from typing_extensions import TypeForm
+from typing_extensions import Sentinel
 
 from .enums import StrEnum
 
@@ -104,24 +105,6 @@ U_cov = TypeVar("U_cov", covariant=True)
 
 type AnnotationScanType = type[Any] | TypeAliasType | GenericAlias[Any] | NewType | ForwardRef | str
 
-type AnyTypeHint = (
-    TypeForm[object]
-    | SingleTypeDef[Any]
-    | TypeVar
-    | TypeVarTuple
-    | ForwardRef
-    | TypeAliasType
-    | NewType
-    | UnionType
-    | str
-)
-"""Any hint expression the reflection helpers accept.
-
-``TypeForm[object]`` covers classes, named aliases, generics, unions,
-``Literal``, ``Annotated``, ``NewType`` and ``None``; bare type variables and
-unevaluated forward references are runtime-only forms and are added explicitly.
-"""
-
 
 @runtime_checkable
 class GenericAlias[T](Protocol):
@@ -135,7 +118,35 @@ class GenericAlias[T](Protocol):
     __origin__: type[T]
 
 
-type SingleTypeDef[T] = GenericAlias[T] | TypeAliasType | type[T] | NewType
+@runtime_checkable
+class LiteralGenericAlias[T](GenericAlias[T], Protocol):
+    """protocol for Literal types.
+
+    this since Python.typing _LiteralGenericAlias is private
+
+    """
+
+    def __eq__(self, other):  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D105
+        ...
+
+    def __hash__(self):  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D105
+        ...
+
+
+type TypeOrigin[T] = TypeAliasType | type[T]
+"""A named type object, which may be a concrete type or a type alias."""
+
+type TypeNode[T] = GenericAlias[T] | TypeOrigin[T]
+"""A raw type origin or a type origin with substituted type vars."""
+
+type TypeDef[T] = TypeNode[T] | UnionType | Sentinel | LiteralGenericAlias | Annotated
+"""A type node, literal / sentinel types, annotated objects or a union thereof"""
+
+type TypeExpr[T] = TypeDef[T] | TypeVar
+"""A type definition or a type variable."""
+
+type TypeTuple[T] = tuple[TypeExpr[T], ...] | TypeVarTuple
+"""A tuple of type expressions or a type variable tuple."""
 
 
 @runtime_checkable

@@ -110,21 +110,21 @@ def test_type_params_of_a_specialisation_are_empty() -> None:
 
 def test_typeargs_of_a_specialisation_resolve_to_the_argument() -> None:
     """The type-argument map resolves the parameter to the applied type."""
-    mapping = Box[int].typeargs
+    mapping = Box[int].typevar_map
 
     assert len(mapping) == 1
     value = next(iter(mapping.values()))
     assert not isinstance(value, tuple)
-    assert value.typedef is int
+    assert value.type_def is int
 
 
 def test_typeargs_of_a_two_parameter_specialisation() -> None:
     """Each parameter is bound to its own argument."""
-    mapping = Pair[str, int].typeargs
+    mapping = Pair[str, int].typevar_map
 
     assert len(mapping) == 2
     resolved = {
-        key.__name__: value.typedef
+        key.__name__: value.type_def
         for key, value in mapping.items()
         if not isinstance(value, tuple)
     }
@@ -133,15 +133,15 @@ def test_typeargs_of_a_two_parameter_specialisation() -> None:
 
 def test_typeargs_are_cached_per_class() -> None:
     """The class-level property caches its result."""
-    first = Box[int].typeargs
-    second = Box[int].typeargs
+    first = Box[int].typevar_map
+    second = Box[int].typevar_map
 
     assert first is second
 
 
 def test_typeargs_of_an_unapplied_class_are_identity_bound() -> None:
     """An unapplied class binds its parameters to themselves."""
-    mapping = Box.typeargs
+    mapping = Box.typevar_map
 
     assert len(mapping) == 1
     ((key, value),) = mapping.items()
@@ -170,8 +170,8 @@ def test_concrete_subclass_of_a_specialisation() -> None:
 
 def test_typeref_round_trips_nested_specialisations() -> None:
     """A nested generic alias resolves to the applied class."""
-    assert TypeRef(Nested[int]).typeform is Nested[int]
-    assert TypeRef(Box[list[int]]).typeform is Box[list[int]]
+    assert TypeRef(Nested[int]).resolved_type_def is Nested[int]
+    assert TypeRef(Box[list[int]]).resolved_type_def is Box[list[int]]
 
 
 def test_non_generic_subclass_gets_default_origin_and_args() -> None:

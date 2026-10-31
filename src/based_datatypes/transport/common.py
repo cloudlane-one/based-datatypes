@@ -14,11 +14,11 @@ import sqlparse
 import yaml
 
 from based_datatypes.files import File
-from based_datatypes.typing import SingleTypeDef, has_type
+from based_datatypes.typing import TypeNode, TypeRef
 
 from .base import IPC, V2, Open, TransportDriver, TransportScope, current_ser_purpose
 
-common_drivers: dict[SingleTypeDef | UnionType, type[TransportDriver]] = {}
+common_drivers: dict[TypeNode | UnionType, type[TransportDriver]] = {}
 
 
 # Simple, stringifiable types
@@ -52,9 +52,9 @@ type JSONDict = dict[str, JSONValue]
 J = TypeVar("J", bound=JSONDict, default=JSONDict)
 
 
-def check_type_and_cast[T](obj: Any, annotation: SingleTypeDef[T] | None = None) -> T:
+def check_type_and_cast[T](obj: Any, annotation: TypeNode[T] | None = None) -> T:
     """Check if the object matches the annotation type and cast it."""
-    if annotation is not None and not has_type(obj, annotation):
+    if annotation is not None and not TypeRef(annotation).validate(obj):
         raise TypeError(f"Object does not match expected type: {annotation}")
     return cast(T, obj)
 
@@ -113,7 +113,7 @@ class JSONTransporter(TransportDriver[JSONDict, JSONFile]):
         instance: JSONDict,
         target: JSONFile,
         realm: Any,
-        annotation: SingleTypeDef[JSONDict] | None = None,
+        annotation: TypeNode[JSONDict] | None = None,
     ) -> int:
         """Measure the encoded dictionary without writing it."""
         return _encoded_size(_serialize_json(instance, target.mime))
@@ -123,7 +123,7 @@ class JSONTransporter(TransportDriver[JSONDict, JSONFile]):
         cls: type[TransportDriver[V2, JSONFile]],
         source: JSONFile,
         realm: Any,
-        annotation: SingleTypeDef[V2] | None = None,
+        annotation: TypeNode[V2] | None = None,
     ) -> V2:
         """Parse a dictionary from a JSON or YAML file."""
         dct: dict
@@ -142,7 +142,7 @@ class JSONTransporter(TransportDriver[JSONDict, JSONFile]):
         instance: JSONDict,
         target: JSONFile,
         realm: Any,
-        annotation: SingleTypeDef[JSONDict] | None = None,
+        annotation: TypeNode[JSONDict] | None = None,
     ) -> None:
         """Convert a dictionary to a JSON or YAML file."""
         text = _serialize_json(instance, target.mime)
@@ -188,7 +188,7 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
         instance: xml.ElementTree,
         target: XMLFile,
         realm: Any,
-        annotation: SingleTypeDef[xml.ElementTree] | None = None,
+        annotation: TypeNode[xml.ElementTree] | None = None,
     ) -> int:
         """Measure the serialized tree without writing it."""
         return _encoded_size(_serialize_xml(instance))
@@ -198,7 +198,7 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
         cls: type[TransportDriver[V2, XMLFile]],
         source: XMLFile,
         realm: Any,
-        annotation: SingleTypeDef[V2] | None = None,
+        annotation: TypeNode[V2] | None = None,
     ) -> V2:
         """Parse an XML ElementTree from a file."""
         if source.mime not in {"application/xml", "text/xml"}:
@@ -218,7 +218,7 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
         instance: xml.ElementTree,
         target: XMLFile,
         realm: Any,
-        annotation: SingleTypeDef[xml.ElementTree] | None = None,
+        annotation: TypeNode[xml.ElementTree] | None = None,
     ) -> None:
         """Convert an XML ElementTree to a file."""
         assert target.mime in {"application/xml", "text/xml"}
@@ -244,7 +244,7 @@ try:
             instance: pyd.BaseModel,
             target: JSONFile,
             realm: Any,
-            annotation: SingleTypeDef[pyd.BaseModel] | None = None,
+            annotation: TypeNode[pyd.BaseModel] | None = None,
         ) -> int:
             """Measure the serialized model without writing it."""
             return _encoded_size(_serialize_json(instance.model_dump(mode="json"), target.mime))
@@ -254,7 +254,7 @@ try:
             cls: type[TransportDriver[V2, JSONFile]],
             source: JSONFile,
             realm: Any,
-            annotation: SingleTypeDef[V2] | None = None,
+            annotation: TypeNode[V2] | None = None,
         ) -> V2:
             """Parse a Pydantic model from a JSON or YAML file."""
             with source.open("r") as f:
@@ -275,7 +275,7 @@ try:
             instance: pyd.BaseModel,
             target: JSONFile,
             realm: Any,
-            annotation: SingleTypeDef[pyd.BaseModel] | None = None,
+            annotation: TypeNode[pyd.BaseModel] | None = None,
         ) -> None:
             """Convert a Pydantic model to a JSON or YAML file."""
             # ``mode="json"`` converts dates, UUIDs and decimals to JSON-native
@@ -316,7 +316,7 @@ try:
             instance: pd.DataFrame,
             target: DfFile,
             realm: Any,
-            annotation: SingleTypeDef[pd.DataFrame] | None = None,
+            annotation: TypeNode[pd.DataFrame] | None = None,
         ) -> int:
             """Estimate the encoded size, sampling CSV output by row."""
             if target.mime == "text/csv":
@@ -334,7 +334,7 @@ try:
             cls: type[TransportDriver[V2, DfFile]],
             source: DfFile,
             realm: Any,
-            annotation: SingleTypeDef[V2] | None = None,
+            annotation: TypeNode[V2] | None = None,
         ) -> V2:
             """Parse a DataFrame from a CSV or Parquet file."""
             with source.open("r") as f:
@@ -356,7 +356,7 @@ try:
             instance: pd.DataFrame,
             target: DfFile,
             realm: Any,
-            annotation: SingleTypeDef[pd.DataFrame] | None = None,
+            annotation: TypeNode[pd.DataFrame] | None = None,
         ) -> None:
             """Convert a DataFrame to a CSV or Parquet file."""
             with target.open("w") as f:
@@ -392,7 +392,7 @@ class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
         instance: pl.DataFrame,
         target: DfFile,
         realm: Any,
-        annotation: SingleTypeDef[pl.DataFrame] | None = None,
+        annotation: TypeNode[pl.DataFrame] | None = None,
     ) -> int:
         """Estimate the encoded size, sampling CSV output by row."""
         if target.mime == "text/csv":
@@ -410,7 +410,7 @@ class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
         cls: type[TransportDriver[V2, DfFile]],
         source: DfFile,
         realm: Any,
-        annotation: SingleTypeDef[V2] | None = None,
+        annotation: TypeNode[V2] | None = None,
     ) -> V2:
         """Parse a Polars DataFrame from a CSV or Parquet file."""
         with source.open("r") as f:
@@ -433,7 +433,7 @@ class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
         instance: pl.DataFrame,
         target: DfFile,
         realm: Any,
-        annotation: SingleTypeDef[pl.DataFrame] | None = None,
+        annotation: TypeNode[pl.DataFrame] | None = None,
     ) -> None:
         """Convert a Polars DataFrame to a CSV or Parquet file."""
         with target.open("w") as f:
@@ -489,7 +489,7 @@ try:
             instance: np.ndarray,
             target: NpFile,
             realm: Any,
-            annotation: SingleTypeDef[np.ndarray] | None = None,
+            annotation: TypeNode[np.ndarray] | None = None,
         ) -> int:
             """Estimate the encoded size from the array's memory footprint."""
             if target.mime in {"application/x-npy", "application/x-npz"}:
@@ -506,7 +506,7 @@ try:
             cls: type[TransportDriver[V2, NpFile]],
             source: NpFile,
             realm: Any,
-            annotation: SingleTypeDef[V2] | None = None,
+            annotation: TypeNode[V2] | None = None,
         ) -> V2:
             """Parse a NumPy array from a file."""
             with source.open("r") as f:
@@ -529,7 +529,7 @@ try:
             instance: np.ndarray,
             target: NpFile,
             realm: Any,
-            annotation: SingleTypeDef[np.ndarray] | None = None,
+            annotation: TypeNode[np.ndarray] | None = None,
         ) -> None:
             """Convert a NumPy array to a file."""
             if target.mime in {"application/x-npy", "application/x-npz"}:
@@ -582,7 +582,7 @@ try:
             instance: sqla.Executable | Iterable[sqla.Executable],
             target: SQLFile,
             realm: Any,
-            annotation: SingleTypeDef[sqla.Executable | Iterable[sqla.Executable]] | None = None,
+            annotation: TypeNode[sqla.Executable | Iterable[sqla.Executable]] | None = None,
         ) -> int:
             """Measure the formatted statements without writing them."""
             return _encoded_size(";\n\n".join(_format_statements(instance)))
@@ -592,7 +592,7 @@ try:
             cls: type[TransportDriver[V2, SQLFile]],
             source: SQLFile,
             realm: Any,
-            annotation: SingleTypeDef[V2] | None = None,
+            annotation: TypeNode[V2] | None = None,
         ) -> V2:
             """Parse an SQL statement from a file."""
             with source.open("r") as f:
@@ -622,7 +622,7 @@ try:
             instance: sqla.Executable | Iterable[sqla.Executable],
             target: SQLFile,
             realm: Any,
-            annotation: SingleTypeDef[sqla.Executable | Iterable[sqla.Executable]] | None = None,
+            annotation: TypeNode[sqla.Executable | Iterable[sqla.Executable]] | None = None,
         ) -> None:
             """Convert an SQL statement to a file."""
             formatted = _format_statements(instance)
@@ -696,7 +696,7 @@ try:
             instance: Image.Image,
             target: ImageFile,
             realm: Any,
-            annotation: SingleTypeDef[Image.Image] | None = None,
+            annotation: TypeNode[Image.Image] | None = None,
         ) -> int:
             """Estimate the uncompressed pixel payload.
 
@@ -711,7 +711,7 @@ try:
             cls: type[TransportDriver[V2, ImageFile]],
             source: ImageFile,
             realm: Any,
-            annotation: SingleTypeDef[V2] | None = None,
+            annotation: TypeNode[V2] | None = None,
         ) -> V2:
             """Parse an image from a file."""
             with source.open("r") as f:
@@ -726,7 +726,7 @@ try:
             instance: Image.Image,
             target: ImageFile,
             realm: Any,
-            annotation: SingleTypeDef[Image.Image] | None = None,
+            annotation: TypeNode[Image.Image] | None = None,
         ) -> None:
             """Convert an image to a file."""
             # The encoder comes from the target format, never from the source
@@ -763,7 +763,7 @@ try:
             instance: BeautifulSoup,
             target: HTMLFile,
             realm: Any,
-            annotation: SingleTypeDef[BeautifulSoup] | None = None,
+            annotation: TypeNode[BeautifulSoup] | None = None,
         ) -> int:
             """Measure the serialized soup without writing it."""
             return _encoded_size(str(instance))
@@ -773,7 +773,7 @@ try:
             cls: type[TransportDriver[V2, HTMLFile]],
             source: HTMLFile,
             realm: Any,
-            annotation: SingleTypeDef[V2] | None = None,
+            annotation: TypeNode[V2] | None = None,
         ) -> V2:
             """Parse HTML from a file."""
             with source.open("r") as f:
@@ -788,7 +788,7 @@ try:
             instance: BeautifulSoup,
             target: HTMLFile,
             realm: Any,
-            annotation: SingleTypeDef[BeautifulSoup] | None = None,
+            annotation: TypeNode[BeautifulSoup] | None = None,
         ) -> None:
             """Convert BeautifulSoup object to an HTML file."""
             with target.open("w") as f:
@@ -837,7 +837,7 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
         instance: Any,
         target: PickleFile,
         realm: Any,
-        annotation: SingleTypeDef[Any] | None = None,
+        annotation: TypeNode[Any] | None = None,
     ) -> int:
         """Measure the pickle payload without writing it."""
         return len(pickle.dumps(instance))
@@ -847,7 +847,7 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
         cls: type[TransportDriver[V2, PickleFile]],
         source: PickleFile,
         realm: Any,
-        annotation: SingleTypeDef[V2] | None = None,
+        annotation: TypeNode[V2] | None = None,
     ) -> V2:
         """Parse an object from a Pickle file."""
         # Unpickling executes arbitrary code, so it is deliberately restricted to
@@ -866,7 +866,7 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
         instance: Any,
         target: PickleFile,
         realm: Any,
-        annotation: SingleTypeDef[Any] | None = None,
+        annotation: TypeNode[Any] | None = None,
     ) -> None:
         """Convert an object to a Pickle file."""
         PickleTransporter._require_supported_scope()

@@ -18,8 +18,8 @@ from based_datatypes.typing import TypeRef, has_type
 
 reference = TypeRef(list[int])
 
-print(reference.typeform)
-print(reference.origin, reference.args)
+print(reference.resolved_type_def)
+print(reference.origin, reference.raw_args)
 print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 ```
 
@@ -27,7 +27,7 @@ print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 
 | Name | Purpose |
 | --- | --- |
-| `TypeRef(hint, ...)` | Resolved reference to a hint: origin, arguments, parameters, union `members`, typeform, type-variable map, validation. |
+| `TypeRef(hint, ...)` | Resolved reference to a hint: origin, arguments, parameters, union `members`, resolved type definition, type-variable map, validation. |
 | `TypeAwareClass` | Base class whose subclasses remember the arguments they were parameterised with. |
 | `typedef_to_typeset(typedef)` | The set of concrete classes a hint can produce (`int \| None` → `{int, NoneType}`). |
 | `is_subtype(type_, supertype)` | Subtyping test over generic and special-form hints. |
@@ -40,7 +40,7 @@ print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 | `get_typeargs(instance)` | Type arguments recorded on a generic instance. |
 | `is_frozen_dataclass` / `is_immutable` | Dataclass and immutability predicates. |
 | `get_nondefault_methods` / `get_own_attrs` | Attribute introspection without inherited noise. |
-| `AnyTypeHint` | The union of hint expressions the helpers accept. |
+| `TypeDef` / `TypeNode` | The unions of hint expressions the helpers accept. |
 
 ## From a hint to concrete classes
 
@@ -92,13 +92,13 @@ from based_datatypes.typing import TypeRef
 
 type Names = list[str]
 
-print(TypeRef("int").typedef)
+print(TypeRef("int").type_def)
 print(TypeRef(Names).origin)
-print(TypeRef(Names).typeform is Names)
+print(TypeRef(Names).resolved_type_def is Names)
 
 reference = TypeRef(dict[str, int])
-print(reference.params, reference.args)
-print("args:", [arg.typedef for arg in reference.arg_typerefs])
+print(reference.params, reference.raw_args)
+print("args:", [arg.type_def for arg in reference.arg_typerefs])
 ```
 
 `validate` combines the runtime check with pydantic validation when the annotation carries
@@ -145,10 +145,10 @@ print(UserRepository[int].__origin__.__name__, UserRepository[int].__args__)
 print(UserRepository[int] is UserRepository[int])
 
 typevar_map = TypeRef(UserRepository[int]).typevar_map
-print("resolved:", sorted({ref.typeform.__name__ for ref in typevar_map.values()}))
+print("resolved:", sorted({ref.resolved_type_def.__name__ for ref in typevar_map.values()}))
 ```
 
-The class-level `typeargs` property is the same map without constructing a `TypeRef`
+The class-level `typevar_map` property is the same map without constructing a `TypeRef`
 yourself, and `type_params` reports the declaration's free parameters:
 
 ```python exec="on" session="typing"

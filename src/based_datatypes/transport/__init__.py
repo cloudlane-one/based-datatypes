@@ -8,12 +8,9 @@ from typing_extensions import TypeForm
 
 from based_datatypes.files import File
 from based_datatypes.typing import (
-    SingleTypeDef,
+    TypeNode,
     TypeRef,
-    has_type,
-    is_subtype,
     is_type_hint,
-    typedef_to_typeset,
 )
 
 from .base import (
@@ -54,10 +51,10 @@ __all__ = [
     "transport_scope",
 ]
 
-custom_drivers: dict[SingleTypeDef | UnionType, type[TransportDriver]] = {}
+custom_drivers: dict[TypeNode | UnionType, type[TransportDriver]] = {}
 
 
-def _covers(registered: SingleTypeDef | UnionType, subject: object) -> bool:
+def _covers(registered: TypeNode | UnionType, subject: object) -> bool:
     """Check whether a registered driver key covers a value, type or type hint.
 
     Hints are compared as types, so container arguments keep their meaning: a
@@ -66,9 +63,9 @@ def _covers(registered: SingleTypeDef | UnionType, subject: object) -> bool:
     which also holds container elements to their declared element type.
     """
     if is_type_hint(subject):
-        return is_subtype(subject, registered)
+        return TypeRef(subject).is_subtype(registered)
 
-    return has_type(subject, registered)
+    return TypeRef(registered).validate(subject)
 
 
 def _lossless_for(driver: type[TransportDriver], target: object) -> bool:
@@ -161,9 +158,9 @@ def get_transport_driver[U](
     return cast(type[TransportDriver[U, Any]], candidates[0][1])
 
 
-def get_transport_types(src_type: SingleTypeDef | UnionType) -> TransportTypes:
+def get_transport_types(src_type: TypeNode | UnionType) -> TransportTypes:
     """Get the transport types for a given type."""
-    if is_subtype(src_type, Transportable):
+    if TypeRef(src_type).is_subtype(Transportable):
         common_type = TypeRef(src_type).common_type
         _check_scope(
             common_type.__transport_scopes__(),  # pyright: ignore[reportAbstractUsage]
@@ -199,12 +196,18 @@ def export_object(obj: Any, target: Any, realm: Realm) -> None:
     return driver.export_object(obj, target, realm)
 
 
-def import_object[T](source: Any, realm: Realm, annotation: SingleTypeDef[T]) -> T:
+def import_object[T](source: Any, realm: Realm, annotation: TypeNode[T]) -> T:
     """Import an object from a source."""
     scope = current_ser_purpose.get()
 
-    if is_subtype(annotation, Transportable):
-        transportables = [t for t in typedef_to_typeset(annotation) if issubclass(t, Transportable)]
+    type_ref = TypeRef(annotation)
+
+    if type_ref.is_subtype(Transportable):
+        transportables = [
+            cast(type[Transportable], t)
+            for t in type_ref.typeset
+            if TypeRef(t).is_subtype(Transportable)
+        ]
         convertible = [t for t in transportables if t.__transport_types__().match_targets([source])]
         allowed = [
             candidate
@@ -215,14 +218,14 @@ def import_object[T](source: Any, realm: Realm, annotation: SingleTypeDef[T]) ->
         if allowed:
             return cast(
                 T,
-                allowed[0].__import__(source, realm, cast(SingleTypeDef, annotation)),
+                allowed[0].__import__(source, realm, cast(TypeNode, annotation)),
             )
 
         if convertible:
             # The source format is supported, only the scope is not.
             _check_scope(convertible[0].__transport_scopes__(), convertible[0].__name__, scope)
 
-    annotation = cast(SingleTypeDef[T], annotation)  # avoid pyright issue due to type narrowing.
+    annotation = cast(TypeNode[T], annotation)  # avoid pyright issue due to type narrowing.
     converter = get_transport_driver(annotation, [source], scope=scope)
     if converter is None:
         raise TypeError(
@@ -265,8 +268,6 @@ def estimate_bytes(obj: Any, target: Any, realm: Realm) -> int:
     return driver.estimate_bytes(obj, target, realm)
 
 
-def register_transport_driver(
-    type_: SingleTypeDef | UnionType, driver: type[TransportDriver]
-) -> None:
+def register_transport_driver(type_: TypeNode | UnionType, driver: type[TransportDriver]) -> None:
     """Register a custom transport driver."""
     custom_drivers[type_] = driver

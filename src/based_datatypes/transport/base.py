@@ -15,7 +15,7 @@ from typing_extensions import TypeForm
 
 from based_datatypes.descriptors import cached_method
 from based_datatypes.files import File
-from based_datatypes.typing import SingleTypeDef, TypeAwareClass, is_subtype
+from based_datatypes.typing import TypeAwareClass, TypeNode, TypeRef
 
 T = TypeVar("T", contravariant=True)
 T2 = TypeVar("T2")
@@ -98,14 +98,14 @@ class Realm:
 class TransportTypes(Generic[T]):  # noqa: UP046
     """A set of interfaces that can be used as transport formats."""
 
-    types: Sequence[SingleTypeDef[T]]
+    types: Sequence[TypeNode[T]]
     """Declared transport type hints, e.g. ``File[Literal["application/json"], TextIO]``."""
 
     def __post_init__(self) -> None:
         """Normalize the declared hints to a tuple."""
         self.types = tuple(self.types)
 
-    def match_targets(self, targets: Collection[TypeForm | File]) -> list[SingleTypeDef[T]]:
+    def match_targets(self, targets: Collection[TypeForm | File]) -> list[TypeNode[T]]:
         """Return the supported types that any of the given targets satisfies.
 
         Args:
@@ -121,7 +121,9 @@ class TransportTypes(Generic[T]):  # noqa: UP046
         return [
             t
             for t in self.types
-            if any(tg.match(t) if isinstance(tg, File) else is_subtype(tg, t) for tg in targets)
+            if any(
+                tg.match(t) if isinstance(tg, File) else TypeRef(tg).is_subtype(t) for tg in targets
+            )
         ]
 
 
@@ -155,7 +157,7 @@ class Transportable(Protocol[T]):  # pyright: ignore[reportInvalidTypeVarUse]
         cls: type[U],
         source: T,
         realm: Realm,
-        annotation: SingleTypeDef[U] | None = None,
+        annotation: TypeNode[U] | None = None,
     ) -> U:
         """Import from the source type or format."""
         ...
@@ -164,7 +166,7 @@ class Transportable(Protocol[T]):  # pyright: ignore[reportInvalidTypeVarUse]
         self: Transportable[T2],
         target: T2,
         realm: Realm,
-        annotation: SingleTypeDef[Transportable[T2]] | None = None,
+        annotation: TypeNode[Transportable[T2]] | None = None,
     ) -> None:
         """Export to the target type or format."""
         ...
@@ -184,11 +186,11 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
 
     @classmethod
     @cached_method
-    def obj_type(cls) -> SingleTypeDef[V]:
+    def obj_type(cls) -> TypeNode[V]:
         """Return the type of object this transport driver handles."""
-        t = cls.typeargs[V]
+        t = cls.typevar_map[V]
         assert not isinstance(t, tuple)
-        return t.single_typedef
+        return t.approx_single_typeform
 
     @classmethod
     def __transport_scopes__(cls) -> frozenset[type[TransportScope]]:
@@ -216,10 +218,10 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
     @cached_method
     def transport_types(cls) -> TransportTypes[T]:
         """Return the set of types that this transport driver supports."""
-        t = cls.typeargs[T]
+        t = cls.typevar_map[T]
         assert not isinstance(t, tuple)
 
-        return TransportTypes(cast(tuple[SingleTypeDef[T], ...], t.members))
+        return TransportTypes(cast(tuple[TypeNode[T], ...], t.members))
 
     @classmethod
     @abstractmethod
@@ -227,7 +229,7 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
         cls: type[TransportDriver[V2, Any]],
         source: T,
         realm: Realm,
-        annotation: SingleTypeDef[V2] | None = None,
+        annotation: TypeNode[V2] | None = None,
     ) -> V2:
         """Import an object from the source type or format."""
         ...
@@ -239,7 +241,7 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
         instance: V,
         target: T,
         realm: Realm,
-        annotation: SingleTypeDef[V] | None = None,
+        annotation: TypeNode[V] | None = None,
     ) -> None:
         """Export an object to the target type or format."""
         ...
@@ -250,7 +252,7 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
         instance: V,
         target: T,
         realm: Realm,
-        annotation: SingleTypeDef[V] | None = None,
+        annotation: TypeNode[V] | None = None,
     ) -> int:
         """Estimate the byte size of exporting ``instance`` to ``target``.
 
@@ -274,7 +276,7 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
         cls,
         source: B,
         realm: Realm,
-        annotation: SingleTypeDef[V] | None = None,
+        annotation: TypeNode[V] | None = None,
     ) -> pl.Series:
         """Import a batch of data from the source type or format."""
         raise NotImplementedError()
@@ -285,7 +287,7 @@ class TransportDriver(ABC, TypeAwareClass, Generic[V, T, B]):
         batch: pl.Series,
         target: B2,
         realm: Realm,
-        annotation: SingleTypeDef[V] | None = None,
+        annotation: TypeNode[V] | None = None,
     ) -> None:
         """Export a batch of data to the target type or format."""
         raise NotImplementedError()

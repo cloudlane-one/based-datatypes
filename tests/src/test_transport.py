@@ -50,7 +50,7 @@ from based_datatypes.transport.common import (
     XMLFile,
     check_type_and_cast,
 )
-from based_datatypes.typing import SingleTypeDef, has_type
+from based_datatypes.typing import TypeNode, TypeRef
 
 
 class Record(BaseModel):
@@ -103,7 +103,7 @@ class PointDriver(TransportDriver[Point, PointFile]):
         cls: type[TransportDriver[V2, PointFile]],
         source: PointFile,
         realm: Any,
-        annotation: SingleTypeDef[V2] | None = None,
+        annotation: TypeNode[V2] | None = None,
     ) -> V2:
         """Parse a point from a text file."""
         with source.open("r") as stream:
@@ -117,7 +117,7 @@ class PointDriver(TransportDriver[Point, PointFile]):
         instance: Point,
         target: PointFile,
         realm: Any,
-        annotation: SingleTypeDef[Point] | None = None,
+        annotation: TypeNode[Point] | None = None,
     ) -> None:
         """Write a point to a text file."""
         with target.open("w") as stream:
@@ -149,7 +149,7 @@ class Doc:
         cls,
         source: File[Literal["text/plain"], TextIO],
         realm: Realm,
-        annotation: "SingleTypeDef[Doc] | None" = None,
+        annotation: "TypeNode[Doc] | None" = None,
     ) -> "Doc":
         """Read the document from text."""
         with source.open("r") as stream:
@@ -159,7 +159,7 @@ class Doc:
         self,
         target: File[Literal["text/plain"], TextIO],
         realm: Realm,
-        annotation: SingleTypeDef[Transportable[TextIO]] | None = None,
+        annotation: TypeNode[Transportable[TextIO]] | None = None,
     ) -> None:
         """Write the document as text."""
         with target.open("w") as stream:
@@ -556,9 +556,9 @@ class TestJSONTransporter:
 
     def test_alias_admits_scalars_at_any_depth(self) -> None:
         """The recursive JSON alias accepts scalar leaves and nothing else."""
-        assert has_type({"a": 1, "b": {"c": [1, "x", None]}}, JSONDict)
-        assert not has_type({"a": {1, 2}}, JSONDict)
-        assert not has_type({"a": 1}, list[int])
+        assert TypeRef(JSONDict).validate({"a": 1, "b": {"c": [1, "x", None]}})
+        assert not TypeRef(JSONDict).validate({"a": {1, 2}})
+        assert not TypeRef(list[int]).validate({"a": 1})
 
     def test_export_rejects_unsupported_medium(self, workdir: Path) -> None:
         """No driver means a clear ``TypeError``."""

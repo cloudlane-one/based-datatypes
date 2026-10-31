@@ -25,8 +25,8 @@ from typing import (
 
 from identify.identify import tags_from_filename, tags_from_path
 
-from based_datatypes.types import SingleTypeDef
-from based_datatypes.typing import TypeRef, is_subtype
+from based_datatypes.types import TypeNode
+from based_datatypes.typing import TypeRef
 
 
 def ensure_dir_exists(path: Path | str) -> Path:
@@ -140,7 +140,7 @@ class File(ABC, Generic[M, I]):
         finally:
             io.close()
 
-    def match(self, hint: SingleTypeDef[Any]) -> bool:
+    def match(self, hint: TypeNode[Any]) -> bool:
         """Check whether a declared transport hint accepts the given target.
 
         A hint may name a concrete ``File`` subclass, in which case the target
@@ -148,10 +148,10 @@ class File(ABC, Generic[M, I]):
         bare ``File`` hint (no format arguments) matches any file of that class.
         """
         ref = TypeRef(hint)
-        if not is_subtype(ref.typeform, File):
+        if not ref.is_subtype(File):
             return False
 
-        origin = get_origin(ref.typeform) or ref.typeform
+        origin = get_origin(ref.resolved_type_def) or ref.resolved_type_def
         if not isinstance(origin, type) or not isinstance(self, origin):
             return False
 
@@ -162,7 +162,7 @@ class File(ABC, Generic[M, I]):
         mime_ref, io_ref = args
         return (
             len(mime_ref.literal_values) == 0 or self.mime in mime_ref.literal_values
-        ) and is_subtype(self.io_type, io_ref.typeform)
+        ) and TypeRef(self.io_type).is_subtype(io_ref.resolved_type_def)
 
 
 @dataclass
