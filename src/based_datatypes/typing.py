@@ -725,6 +725,23 @@ class TypeRef(Generic[T]):  # noqa: UP046
         }
 
     @cached_property
+    def resolved_typevar_map(
+        self,
+    ) -> dict[
+        TypeVar | TypeVarTuple,
+        TypeRef | tuple[TypeRef, ...],
+    ]:
+        """Return a mapping of type variables to their resolved values."""
+        return {
+            k: v
+            for k, v in self.typevar_map.items()
+            if all(
+                not isinstance(t.hint, TypeVar | TypeVarTuple)
+                for t in (v if isinstance(v, tuple) else (v,))
+            )
+        }
+
+    @cached_property
     def resolved_type_def(self) -> TypeDef[T]:
         """Resolved type definition with arguments recursively resolved."""
         if isinstance(self.type_def, type) and issubclass(self.type_def, TypeAwareClass):
@@ -992,7 +1009,9 @@ class TypeRef(Generic[T]):  # noqa: UP046
         annos: dict[str, TypeDef | TypeForm] = {}
 
         for name, anno in get_annotations(common_type).items():
-            resolved = TypeRef(anno, ctx_module=getmodule(common_type), subs=self.typevar_map)
+            resolved = TypeRef(
+                anno, ctx_module=getmodule(common_type), subs=self.resolved_typevar_map
+            )
 
             if resolved.origin in (ClassVar, InitVar):
                 continue
@@ -1006,7 +1025,7 @@ class TypeRef(Generic[T]):  # noqa: UP046
                     annos[name] = TypeRef(
                         get_return_type,
                         ctx_module=getmodule(resolved.concrete_type),
-                        subs=self.typevar_map,
+                        subs=self.resolved_typevar_map,
                     ).resolved_type_def
 
             annos[name] = resolved.resolved_type_def
