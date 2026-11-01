@@ -464,6 +464,8 @@ class TestFileMatch:
         file = make_file(workdir, "f", "application/json")
 
         assert file.match(File[Literal["application/json"], TextIO])
+        assert file.match(File[Literal["application/json"]])
+        assert file.match(File[Literal["application/json", "application/yaml"], TextIO])
         assert not file.match(File[Literal["application/pickle"], TextIO])
         assert not file.match(File[Literal["application/json"], BinaryIO])
 

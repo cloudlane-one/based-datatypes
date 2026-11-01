@@ -19,8 +19,9 @@ from typing import (
     TextIO,
     TypeVar,
     cast,
-    get_origin,
+    final,
     overload,
+    override,
 )
 
 from identify.identify import tags_from_filename, tags_from_path
@@ -69,6 +70,17 @@ additional_mime_inv: dict[str, list[str]] = {}
 for _extension, _mime in additional_mime.items():
     additional_mime_inv.setdefault(_mime, []).append(_extension)
 
+
+@final
+class Read:
+    """A marker class for read-only file."""
+
+
+@final
+class Write:
+    """A marker class for write-only file."""
+
+
 M = TypeVar("M", bound=LiteralString | str, covariant=True)
 
 I = TypeVar(  # noqa: E741
@@ -77,9 +89,11 @@ I = TypeVar(  # noqa: E741
     default=Any,
 )
 
+R = TypeVar("R", bound=Read | Write, contravariant=True, default=Read | Write)
+
 
 @dataclass(kw_only=True)
-class File(ABC, Generic[M, I]):
+class File(ABC, Generic[M, I, R]):
     """A generic, single file (may be within a file system or object storage)."""
 
     mime: M
@@ -104,35 +118,22 @@ class File(ABC, Generic[M, I]):
         assert ext is not None, "Could not determine file extension"
         return ext
 
-    @overload
-    def get_io(self: File[Any, TextIO], mode: Literal["rw", "r", "w"] = ...) -> TextIO: ...
-
-    @overload
-    def get_io(self: File[Any, BinaryIO], mode: Literal["rw", "r", "w"] = ...) -> BinaryIO: ...
-
-    @overload
-    def get_io(
-        self: File[Any, TextIO | BinaryIO], mode: Literal["rw", "r", "w"] = ...
-    ) -> TextIO | BinaryIO: ...
-
     @abstractmethod
-    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> TextIO | BinaryIO:
+    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> I:
         """Return the file's content as an IO stream."""
         ...
 
     @overload
-    def open(self: File[Any, TextIO], mode: Literal["rw", "r", "w"] = ...) -> TextIO: ...
+    def open(self: File[Any, Any, Read], mode: Literal["r"] = ...) -> I: ...
 
     @overload
-    def open(self: File[Any, BinaryIO], mode: Literal["rw", "r", "w"] = ...) -> BinaryIO: ...
+    def open(self: File[Any, Any, Write], mode: Literal["w"] = ...) -> I: ...
 
     @overload
-    def open(
-        self: File[Any, TextIO | BinaryIO], mode: Literal["rw", "r", "w"] = ...
-    ) -> TextIO | BinaryIO: ...
+    def open(self: File[Any, Any, Read | Write], mode: Literal["rw"] = ...) -> I: ...
 
     @contextmanager
-    def open(self, mode: Literal["rw", "r", "w"] = "rw") -> Generator[TextIO | BinaryIO]:
+    def open(self, mode: Literal["rw", "r", "w"] = "rw") -> Generator[I]:
         """Open the file and return its IO stream."""
         io = self.get_io(mode)
         try:
@@ -141,32 +142,12 @@ class File(ABC, Generic[M, I]):
             io.close()
 
     def match(self, hint: TypeNode[Any]) -> bool:
-        """Check whether a declared transport hint accepts the given target.
-
-        A hint may name a concrete ``File`` subclass, in which case the target
-        must be an instance of it as well as match its MIME type and IO type. A
-        bare ``File`` hint (no format arguments) matches any file of that class.
-        """
-        ref = TypeRef(hint)
-        if not ref.is_subtype(File):
-            return False
-
-        origin = get_origin(ref.resolved_type_def) or ref.resolved_type_def
-        if not isinstance(origin, type) or not isinstance(self, origin):
-            return False
-
-        args = ref.arg_typerefs
-        if len(args) != 2:
-            return True
-
-        mime_ref, io_ref = args
-        return (
-            len(mime_ref.literal_values) == 0 or self.mime in mime_ref.literal_values
-        ) and TypeRef(self.io_type).is_subtype(io_ref.resolved_type_def)
+        """Check if the file matches the given type hint."""
+        return TypeRef(hint).validate(self)
 
 
 @dataclass
-class LocalFile(File[M, TextIO | BinaryIO]):
+class LocalFile(File[M, TextIO | BinaryIO, R]):
     """A generic, single file (may be within a file system or object storage)."""
 
     dir: LocalDir
@@ -223,17 +204,7 @@ class LocalFile(File[M, TextIO | BinaryIO]):
         else:
             return "wb+" if encoding == "binary" else "w+"
 
-    @overload
-    def get_io(self: File[Any, TextIO], mode: Literal["rw", "r", "w"] = ...) -> TextIO: ...
-
-    @overload
-    def get_io(self: File[Any, BinaryIO], mode: Literal["rw", "r", "w"] = ...) -> BinaryIO: ...
-
-    @overload
-    def get_io(
-        self: File[Any, TextIO | BinaryIO], mode: Literal["rw", "r", "w"] = ...
-    ) -> TextIO | BinaryIO: ...
-
+    @override
     def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> TextIO | BinaryIO:
         """Return the file's content as a text IO stream.
 
@@ -331,11 +302,13 @@ class LocalDir(Dir[LocalFile, "LocalDir"]):
             ensure_dir_exists(self.abs_path)
             self._exists = True
 
+    @override
     def keys(self) -> Sequence[str]:
         """Iterate over the items in the directory."""
         self._ensure_exists()
         return [item.name for item in self.abs_path.iterdir() if item.is_file() or item.is_dir()]
 
+    @override
     def __getitem__(self, item: str) -> LocalDir | LocalFile:
         """Get an item from the directory."""
         self._ensure_exists()
@@ -347,6 +320,7 @@ class LocalDir(Dir[LocalFile, "LocalDir"]):
 
         raise KeyError(f"Item '{item}' not found in directory '{self.abs_path}'.")
 
+    @override
     def __delitem__(self, key: str) -> None:
         """Delete an item from the directory."""
         self._ensure_exists()
@@ -358,59 +332,8 @@ class LocalDir(Dir[LocalFile, "LocalDir"]):
         else:
             raise KeyError(f"Item '{key}' not found in directory '{self.abs_path}'.")
 
+    @override
     def __len__(self) -> int:
         """Return the number of items in the directory."""
         self._ensure_exists()
         return len(list(self.abs_path.iterdir()))
-
-
-# @dataclass
-# class HttpFile:
-#     """A (writable) file on a WebDAV server."""
-
-#     url: str | URL
-#     auth: tuple[str, str] | None = None
-
-#     def __post_init__(self):  # noqa: D105
-#         self._local_path = None
-
-#     @property
-#     def url_obj(self) -> URL:
-#         """Return the URL as a yarl.URL object."""
-#         return self.url if isinstance(self.url, URL) else URL(self.url)
-
-#     def get(self) -> Path:
-#         """Download the file to a temporary location and return the path."""
-#         filename = Path(self.url_obj.path).name
-
-#         if (
-#             self._local_path is not None
-#             and self._local_path.exists()
-#             and self.last_modified
-#             <= datetime.fromtimestamp(self._local_path.stat().st_mtime)
-#         ):
-#             return self._local_path
-#         else:
-#             self._local_path = Path(gettempdir()) / filename
-
-#         with requests.get(str(self.url_obj), stream=True, auth=self.auth) as response:
-#             response.raise_for_status()
-#             with self._local_path.open("wb") as file:
-#                 for chunk in response.iter_content(chunk_size=8192):
-#                     file.write(chunk)
-
-#         return self._local_path
-
-#     def set(self, file: Path | str | BinaryIO) -> None:
-#         """Upload the file to the given path."""
-#         f = file if isinstance(file, BinaryIO) else Path(file).open("rb")
-#         response = requests.put(str(self.url_obj), data=f, auth=self.auth)
-#         response.raise_for_status()
-#         f.close()
-
-#     @property
-#     def last_modified(self) -> datetime:
-#         """Return the last modified date of the file."""
-#         response = requests.head(str(self.url_obj), auth=self.auth)
-#         response.raise_for_status()
-#         return datetime.fromisoformat(response.headers["Last-Modified"])
