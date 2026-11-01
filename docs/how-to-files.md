@@ -112,6 +112,30 @@ print(directory.keys())
 Creating a `LocalDir` for a path that does not exist yet is allowed: the directory is created
 when you first read or write through it.
 
+## In-memory files
+
+`MemoryFile` implements the same interface without touching the disk. It is handy for tests
+and for staging content before it is written somewhere. Writes are stored back into
+`content` when the stream is closed, and `"w"` / `"rw"` start from empty content just like a
+local file:
+
+```python exec="on" session="files"
+from typing import TextIO
+
+from based_datatypes.files import MemoryFile
+
+memory = MemoryFile(mime="application/json", io_type=TextIO)
+with memory.open("w") as stream:
+    stream.write('{"a": 1}')
+
+print(memory.content, memory.extension, memory.detected_format)
+with memory.open("r") as stream:
+    print(stream.read())
+```
+
+Content must match the declared `io_type`: a text file takes `str`, a binary file takes
+`bytes`. A read-only stream (`"r"`) rejects writes instead of silently discarding them.
+
 ## Text or binary
 
 Every file carries an `io_type` (`TextIO` or `BinaryIO`) and a `detected_format` of

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import shutil
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterator, Sequence
@@ -224,6 +225,116 @@ class LocalFile(File[M, TextIO | BinaryIO, R]):
             )
 
         return cast(BinaryIO, open(self.path, mode=self.get_file_mode(mode, "binary")))
+
+
+class _TextMemoryStream(io.StringIO):
+    """A text stream that stores its content back into a :class:`MemoryFile`."""
+
+    def __init__(self, file: MemoryFile[Any, Any], initial: str, *, writable: bool) -> None:
+        super().__init__(initial)
+        self._file = file
+        self._writable = writable
+
+    @override
+    def writable(self) -> bool:
+        """Report whether the stream accepts writes."""
+        return self._writable
+
+    @override
+    def write(self, data: str) -> int:
+        """Write text, unless the stream was opened read-only."""
+        if not self._writable:
+            raise io.UnsupportedOperation("not writable")
+        return super().write(data)
+
+    @override
+    def close(self) -> None:
+        """Store the content in the file, then close the stream."""
+        if not self.closed and self._writable:
+            self._file.content = self.getvalue()
+        super().close()
+
+
+class _BinaryMemoryStream(io.BytesIO):
+    """A binary stream that stores its content back into a :class:`MemoryFile`."""
+
+    def __init__(self, file: MemoryFile[Any, Any], initial: bytes, *, writable: bool) -> None:
+        super().__init__(initial)
+        self._file = file
+        self._writable = writable
+
+    @override
+    def writable(self) -> bool:
+        """Report whether the stream accepts writes."""
+        return self._writable
+
+    @override
+    def write(self, data: bytes) -> int:  # pyright: ignore[reportIncompatibleMethodOverride]
+        """Write bytes, unless the stream was opened read-only."""
+        if not self._writable:
+            raise io.UnsupportedOperation("not writable")
+        return super().write(data)
+
+    @override
+    def close(self) -> None:
+        """Store the content in the file, then close the stream."""
+        if not self.closed and self._writable:
+            self._file.content = self.getvalue()
+        super().close()
+
+
+@dataclass
+class MemoryFile(File[M, TextIO | BinaryIO, R]):
+    """A file whose content lives in memory instead of on a storage medium.
+
+    Useful for tests, for staging content before it is written somewhere, and
+    for handing a file to code that only knows the :class:`File` interface.
+    """
+
+    content: bytes | str | None = None
+    """Current content; ``None`` starts empty and is normalized by IO type."""
+
+    name: str | None = None
+    """Optional file name, used for display only."""
+
+    def __post_init__(self) -> None:
+        """Normalize the content to the type implied by ``io_type``."""
+        if self.content is None:
+            self.content = "" if issubclass(self.io_type, TextIO) else b""
+        elif issubclass(self.io_type, TextIO):
+            if not isinstance(self.content, str):
+                raise TypeError("A text file requires str content.")
+        elif not isinstance(self.content, bytes):
+            raise TypeError("A binary file requires bytes content.")
+
+    @cached_property
+    def detected_format(self) -> Literal["text", "binary"]:
+        """Return the format implied by the declared IO type."""
+        return "text" if issubclass(self.io_type, TextIO) else "binary"
+
+    @override
+    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> TextIO | BinaryIO:
+        """Return a stream over the file's content.
+
+        Writes are stored back into :attr:`content` when the stream is closed.
+        ``"w"`` and ``"rw"`` start from empty content, like a local file, while
+        ``"r"`` starts from the current content and rejects writes.
+        """
+        initial = self.content if mode == "r" else None
+        writable = mode != "r"
+
+        if issubclass(self.io_type, TextIO):
+            return _TextMemoryStream(
+                self,
+                cast(str, initial) if initial is not None else "",
+                writable=writable,
+            )
+
+        return _BinaryMemoryStream(
+            self,
+            cast(bytes, initial) if initial is not None else b"",
+            writable=writable,
+        )
 
 
 F = TypeVar("F", bound="File[Any, TextIO | BinaryIO]", covariant=True)

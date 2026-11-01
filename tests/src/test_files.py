@@ -11,6 +11,7 @@ from based_datatypes.files import (
     File,
     LocalDir,
     LocalFile,
+    MemoryFile,
     additional_mime,
     additional_mime_inv,
     ensure_dir_exists,
@@ -432,6 +433,99 @@ class TestLocalDir:
         """Deleting a missing entry raises ``KeyError``."""
         with pytest.raises(KeyError, match="missing"):
             del LocalDir(path=workdir)["missing"]
+
+
+class TestMemoryFile:
+    """Tests for :class:`MemoryFile`."""
+
+    def test_text_defaults_to_empty(self) -> None:
+        """A text file without content starts empty."""
+        file = MemoryFile(mime="text/plain", io_type=TextIO)
+
+        assert file.content == ""
+        assert file.detected_format == "text"
+        assert file.extension == ".txt"
+
+    def test_binary_defaults_to_empty(self) -> None:
+        """A binary file without content starts empty."""
+        file = MemoryFile(mime="application/octet-stream", io_type=BinaryIO)
+
+        assert file.content == b""
+        assert file.detected_format == "binary"
+        assert file.extension == ".bin"
+
+    def test_rejects_mismatched_content(self) -> None:
+        """Content must match the declared IO type."""
+        with pytest.raises(TypeError):
+            MemoryFile(mime="text/plain", io_type=TextIO, content=b"bytes")
+        with pytest.raises(TypeError):
+            MemoryFile(mime="application/octet-stream", io_type=BinaryIO, content="text")
+
+    def test_text_read(self) -> None:
+        """Existing text content is readable."""
+        file = MemoryFile(mime="text/plain", io_type=TextIO, content="hello")
+
+        with cast(TextIO, file.open("r")) as stream:
+            assert stream.read() == "hello"
+
+    def test_text_write_updates_content(self) -> None:
+        """Closing a writable stream stores the content."""
+        file = MemoryFile(mime="text/plain", io_type=TextIO)
+
+        with cast(TextIO, file.open("w")) as stream:
+            stream.write("written")
+
+        assert file.content == "written"
+
+    def test_binary_roundtrip(self) -> None:
+        """Binary content is written and read back."""
+        file = MemoryFile(mime="application/octet-stream", io_type=BinaryIO)
+
+        with cast(BinaryIO, file.open("w")) as stream:
+            stream.write(b"\x00\x01")
+
+        assert file.content == b"\x00\x01"
+        with cast(BinaryIO, file.open("r")) as stream:
+            assert stream.read() == b"\x00\x01"
+
+    def test_read_write_mode(self) -> None:
+        """``rw`` starts empty and supports seeking."""
+        file = MemoryFile(mime="text/plain", io_type=TextIO, content="old")
+
+        with cast(TextIO, file.open("rw")) as stream:
+            stream.write("abc")
+            stream.seek(0)
+            assert stream.read() == "abc"
+
+        assert file.content == "abc"
+
+    def test_read_mode_rejects_writes(self) -> None:
+        """A read-only stream refuses writes and keeps the content."""
+        file = MemoryFile(mime="text/plain", io_type=TextIO, content="keep")
+
+        with cast(TextIO, file.open("r")) as stream:
+            assert not stream.writable()
+            with pytest.raises(io.UnsupportedOperation):
+                stream.write("nope")
+
+        assert file.content == "keep"
+
+    def test_open_closes_stream(self) -> None:
+        """The stream is closed when the context manager exits."""
+        file = MemoryFile(mime="text/plain", io_type=TextIO)
+
+        with file.open("w") as stream:
+            pass
+
+        assert stream.closed
+
+    def test_matches_file_hints(self) -> None:
+        """A memory file matches hints like any other file."""
+        file = MemoryFile(mime="application/json", io_type=TextIO)
+
+        assert file.match(File[Literal["application/json"], TextIO])
+        assert file.match(MemoryFile[Literal["application/json"]])
+        assert not file.match(LocalFile[Literal["application/json"]])
 
 
 class TestAbstractBases:
