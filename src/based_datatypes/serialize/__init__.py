@@ -1,4 +1,4 @@
-"""Arbitrary object (de-)serialization for transport across various mediums."""
+"""Arbitrary object serialization to files and JSON-supported values."""
 
 from collections.abc import Callable, Collection
 from typing import Any, cast
@@ -17,16 +17,24 @@ from .base import (
     Serializable,
     SerializationTarget,
     Serialized,
+    SerializedDict,
+    SerializedValue,
     Serializer,
     TransportScope,
     current_ser_ctx,
     serialization_context,
 )
 from .common import common_serializers
+from .local_fs import INDEX_FILENAME, read_structure, write_structure
 
 __all__ = [
+    "INDEX_FILENAME",
     "Open",
     "Realm",
+    "SerializationTarget",
+    "Serialized",
+    "SerializedDict",
+    "SerializedValue",
     "TransportScope",
     "Serializable",
     "Serializer",
@@ -37,7 +45,9 @@ __all__ = [
     "get_serializers",
     "deserialize",
     "register_serializer",
+    "read_structure",
     "serialization_context",
+    "write_structure",
 ]
 
 custom_serializers: list[Serializer] = []
@@ -49,26 +59,24 @@ def get_serializers[U, T: JSONValue | File, S: TransportScope](
     scope: S = Open(),
     lossless: bool = False,
 ) -> list[tuple[int, type[T], Serializer[U, T, S] | type[Serializable[T, S]]]]:
-    """Get the serializer for a given type or instance.
+    """Get the serializers that can handle a given type or instance.
 
     Args:
         typ: The type or instance to get the serializer for.
-        targets: The transport mediums to write to or read from. Instances are
-            matched on their MIME type and IO type, so the driver for the actual
-            format wins; types only narrow by class. ``None`` skips the medium
-            check and returns the driver for the object type alone.
-        scope: The transport scope to select for. ``None`` uses the ambient
-            :data:`current_ser_purpose`. A driver declared for a subclass scope
+        targets: The serialization targets to write to or read from. Instances are
+            matched on their MIME type and IO type, so the serializer for the actual
+            format wins; types only narrow by class. ``None`` skips the target
+            check and returns the serializers for the object type alone.
+        scope: The scope to select for. A serializer declared for a subclass scope
             (e.g. WAN) also serves a request for its base scope (e.g. IPC).
-        lossless: When ``True``, only drivers that round-trip the target format
-            without loss are eligible; when ``False``, only lossy ones; ``None``
-            accepts either.
+        lossless: When ``True``, only serializers that round-trip the target
+            format without loss are eligible; ``False`` accepts either.
 
     Returns:
         A list of tuples of the form ``(index, target, driver)``, where
-        ``index`` is the index of the matching target in the list of targets
-        ``target`` is the matching transport medium
-        ``driver`` is the serializer or serializable class to handle the object.
+        ``index`` is the index of the matching target in the list of targets,
+        ``target`` is the matching serialization target and ``driver`` is the
+        serializer or serializable class to handle the object.
     """
     candidates = []
 
@@ -105,36 +113,71 @@ def get_serializers[U, T: JSONValue | File, S: TransportScope](
     return candidates  # pyright: ignore[reportReturnType]
 
 
+def _source_type(source: Serialized) -> TypeDef[Any]:
+    """Return the type a source value is matched against.
+
+    A file is matched by its file type. A bare container carries no element
+    types, so it is widened to its content: any list can serve a target that
+    declares a list of a concrete item type, because the target decides what the
+    items are validated as.
+
+    Args:
+        source: The source value to describe.
+
+    Returns:
+        The type of the source value.
+    """
+    if isinstance(source, File):
+        return source.to_file_type()
+
+    if isinstance(source, dict):
+        return dict[str, Any]
+
+    if isinstance(source, list):
+        return list[Any]
+
+    if isinstance(source, tuple):
+        return tuple[Any, ...]
+
+    if isinstance(source, set):
+        return set[Any]
+
+    if isinstance(source, frozenset):
+        return frozenset[Any]
+
+    return type(source)
+
+
 def deserialize[V2](
     source: Serialized,
     annotation: TypeDef[V2],
     scope: TransportScope = Open(),
     realm: Realm | None = None,
 ) -> V2:
-    """Import an object from the source type or format.
+    """Deserialize an object from the source type or format.
 
     Args:
-        source: The source object to import from.
+        source: The source object to deserialize from.
         annotation: The declared type of the object.
-        scope: The transport scope to use for the import.
-        realm: The realm to import from.
+        scope: The serialization scope to use for the deserialization.
+        realm: The realm to deserialize from.
 
     Returns:
-        An instance of the object, imported from the source.
+        An instance of the object, deserialized from the source.
     """
-    source_type = source.to_file_type() if isinstance(source, File) else type(source)
-
+    # Reading is not restricted to lossless formats: the lossiness of a format
+    # describes what an export can drop, not what an import can restore.
     candidates = get_serializers(
         annotation,
-        targets=[source_type],
+        targets=[_source_type(source)],
         scope=scope,
-        lossless=True,
+        lossless=False,
     )
 
     if len(candidates) == 0:
         raise ValueError(
-            f"No suitable serializer found for {type(source)}"
-            f"with scope {scope} and lossless={True}"
+            f"No suitable serializer found for {type(source).__name__} as "
+            f"{annotation!r} under scope {scope!r}."
         )
 
     _, _, driver = candidates[0]
@@ -159,31 +202,36 @@ def serialize[T2: JSONValue | File](
     realm: Realm | None = None,
     file_factory: Callable[[], File] | None = None,
 ) -> T2:
-    """Export an object to the target type or format.
+    """Serialize an object to the target type or format.
+
+    When no target type is given, the serializer picks its preferred format: the
+    first one it declares, which is the lossless one wherever it has a choice.
+    ``lossless`` therefore only filters the selection once a target is requested.
 
     Args:
-        instance: The object to export.
-        target_type: The target type or format to export to.
-        lossless: Whether to require a lossless export.
-        scope: The transport scope to use for the export.
+        instance: The object to serialize.
+        target_type: The target type or format to serialize to.
+        lossless: Whether to require a lossless serialization.
+        scope: The serialization scope to use for the serialization.
         annotation: The declared type of the object, if any.
-        realm: The realm to export to.
+        realm: The realm to serialize to.
         file_factory: An optional factory function to create new files.
 
     Returns:
-        The exported target object.
+        The serialized target object.
     """
     candidates = get_serializers(
         typ=annotation if annotation is not None else type(instance),
         targets=[target_type] if target_type is not None else None,
         scope=scope,
-        lossless=lossless,
+        lossless=lossless if target_type is not None else False,
     )
 
     if len(candidates) == 0:
         raise ValueError(
-            f"No suitable serializer found for {type(instance)}"
-            f"with scope {scope} and lossless={lossless}"
+            f"No suitable serializer found for {type(instance).__name__} to "
+            f"{target_type!r} under scope {scope!r}"
+            + (f" with lossless={lossless}." if target_type is not None else ".")
         )
 
     _, _, driver = candidates[0]
@@ -225,19 +273,19 @@ def estimate_serialized_size[T2: JSONValue | File](
     target: T2 | None = None,
     annotation: TypeDef[Serializable[T2]] | None = None,
 ) -> int:
-    """Estimate the byte size of exporting ``instance`` to ``target_type``.
+    """Estimate the byte size of serializing ``instance`` to ``target_type``.
 
-    Drivers override this when they can measure their format cheaply. The
+    Serializers override this when they can measure their format cheaply. The
     default falls back to :func:`sys.getsizeof`, which measures the object
     in memory rather than the encoded representation.
 
     Args:
-        instance: The object to be exported.
-        target_type: The target type or format to export to.
-        lossless: Whether to require a lossless export.
-        scope: The transport scope to use for the export.
-        realm: The realm to export to.
-        target: An optional pre-allocated target object to export into.
+        instance: The object to be serialized.
+        target_type: The target type or format to serialize to.
+        lossless: Whether to require a lossless serialization.
+        scope: The serialization scope to use for the serialization.
+        realm: The realm to serialize to.
+        target: An optional pre-allocated target object to serialize into.
         annotation: The declared type of the object, if any.
 
     Returns:
@@ -252,8 +300,9 @@ def estimate_serialized_size[T2: JSONValue | File](
 
     if len(candidates) == 0:
         raise ValueError(
-            f"No suitable serializer found for {type(instance)}"
-            f"with scope {scope} and lossless={lossless}"
+            f"No suitable serializer found for {type(instance).__name__} to "
+            f"{target_type!r} under scope {scope!r}"
+            + (f" with lossless={lossless}." if target_type is not None else ".")
         )
 
     _, _, driver = candidates[0]
@@ -277,5 +326,5 @@ def estimate_serialized_size[T2: JSONValue | File](
 
 
 def register_serializer(ser: Serializer) -> None:
-    """Register a custom transport driver."""
+    """Register a custom serializer."""
     custom_serializers.append(ser)

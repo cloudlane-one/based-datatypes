@@ -98,19 +98,19 @@ def test_specialised_class_is_instantiable() -> None:
 
 def test_type_params_of_the_declaration() -> None:
     """The declaration exposes its type parameters."""
-    assert len(Box.type_params) == 1
-    assert len(Pair.type_params) == 2
+    assert len(TypeRef(Box).params) == 1
+    assert len(TypeRef(Pair).params) == 2
 
 
-def test_type_params_of_a_specialisation_are_empty() -> None:
-    """An applied class has no free parameters left."""
-    assert Box[int].type_params == ()
-    assert Pair[str, int].type_params == ()
+def test_type_params_of_a_specialisation_name_the_declaration() -> None:
+    """A specialisation is still parameterised by its declaration's parameters."""
+    assert TypeRef(Box[int]).params == TypeRef(Box).params
+    assert TypeRef(Pair[str, int]).params == TypeRef(Pair).params
 
 
 def test_typeargs_of_a_specialisation_resolve_to_the_argument() -> None:
     """The type-argument map resolves the parameter to the applied type."""
-    mapping = Box[int].typevar_map
+    mapping = TypeRef(Box[int]).typevar_map
 
     assert len(mapping) == 1
     value = next(iter(mapping.values()))
@@ -120,7 +120,7 @@ def test_typeargs_of_a_specialisation_resolve_to_the_argument() -> None:
 
 def test_typeargs_of_a_two_parameter_specialisation() -> None:
     """Each parameter is bound to its own argument."""
-    mapping = Pair[str, int].typevar_map
+    mapping = TypeRef(Pair[str, int]).typevar_map
 
     assert len(mapping) == 2
     resolved = {
@@ -131,17 +131,20 @@ def test_typeargs_of_a_two_parameter_specialisation() -> None:
     assert set(resolved.values()) == {str, int}
 
 
-def test_typeargs_are_cached_per_class() -> None:
-    """The class-level property caches its result."""
-    first = Box[int].typevar_map
-    second = Box[int].typevar_map
+def test_typeargs_are_stable_per_class() -> None:
+    """Resolving the same specialisation twice yields the same bindings."""
+    first = TypeRef(Box[int]).typevar_map
+    second = TypeRef(Box[int]).typevar_map
 
-    assert first is second
+    assert first == second
+    ((_, value),) = first.items()
+    assert not isinstance(value, tuple)
+    assert value.type_def is int
 
 
 def test_typeargs_of_an_unapplied_class_are_identity_bound() -> None:
     """An unapplied class binds its parameters to themselves."""
-    mapping = Box.typevar_map
+    mapping = TypeRef(Box).typevar_map
 
     assert len(mapping) == 1
     ((key, value),) = mapping.items()
@@ -164,7 +167,7 @@ def test_concrete_subclass_of_a_specialisation() -> None:
 
     assert Concrete.__origin__ is Concrete
     assert Concrete.__args__ == ()
-    assert Concrete.type_params == ()
+    assert TypeRef(Concrete).params == ()
     assert Concrete().item is None
 
 
@@ -182,7 +185,7 @@ def test_non_generic_subclass_gets_default_origin_and_args() -> None:
 
     assert Plain.__origin__ is Plain
     assert Plain.__args__ == ()
-    assert Plain.type_params == ()
+    assert TypeRef(Plain).params == ()
 
 
 def test_is_frozen_dataclass_for_class_and_instance() -> None:

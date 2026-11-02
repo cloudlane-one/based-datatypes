@@ -119,7 +119,9 @@ class File(ABC, TypeAwareClass, Generic[M, I, R]):
         return (
             "rw"
             if typeref.is_supertype(Read | Write)
-            else "r" if typeref.is_supertype(Read) else "w"
+            else "r"
+            if typeref.is_supertype(Read)
+            else "w"
         )
 
     @property
@@ -237,7 +239,7 @@ class LocalFile(File[M, I, R]):
 
         Text streams always use UTF-8 with newline translation disabled, so the
         bytes on disk do not depend on the platform or locale and match what the
-        transport estimators measure.
+        serialization size estimators measure.
         """
         if is_subtype(self.io_type, TextIO):
             return cast(

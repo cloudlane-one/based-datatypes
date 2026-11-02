@@ -29,7 +29,7 @@ print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 | --- | --- |
 | `TypeRef(hint, ...)` | Resolved reference to a hint: origin, arguments, parameters, union `members`, resolved type definition, type-variable map, validation. |
 | `TypeAwareClass` | Base class whose subclasses remember the arguments they were parameterised with. |
-| `typedef_to_typeset(typedef)` | The set of concrete classes a hint can produce (`int \| None` → `{int, NoneType}`). |
+| `TypeRef(hint).typeset` | The set of concrete classes a hint can produce (`int \| None` → `{int, NoneType}`). |
 | `is_subtype(type_, supertype)` | Subtyping test over generic and special-form hints. |
 | `has_type(obj, type_)` | Runtime value check driven by a hint (beartype). |
 | `is_type_hint(obj)` | Whether an object describes a type rather than being a value of one. |
@@ -44,22 +44,22 @@ print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 
 ## From a hint to concrete classes
 
-`typedef_to_typeset` flattens unions, resolves named aliases and reduces parameterised
+`TypeRef(...).typeset` flattens unions, resolves named aliases and reduces parameterised
 generics to their origin. Literals, type variables and forward references carry no concrete
-class and yield `object`.
+class and contribute nothing.
 
 ```python exec="on" session="typing"
 from typing import Literal
 
-from based_datatypes.typing import NoneType, typedef_to_typeset
+from based_datatypes.typing import NoneType, TypeRef
 
 type Identifier = int
 
-print(typedef_to_typeset(int | None))
-print(typedef_to_typeset(Identifier))
-print(typedef_to_typeset(list[int]))
-print(typedef_to_typeset(Literal["a", "b"]))
-print(typedef_to_typeset(int | None, remove_null=True) == {int})
+print(TypeRef(int | None).typeset)
+print(TypeRef(Identifier).typeset)
+print(TypeRef(list[int]).typeset)
+print(TypeRef(Literal["a", "b"]).typeset)
+print(TypeRef(int | None).typeset - {NoneType} == {int})
 print(NoneType is type(None))
 ```
 
@@ -148,20 +148,20 @@ typevar_map = TypeRef(UserRepository[int]).typevar_map
 print("resolved:", sorted({ref.resolved_type_def.__name__ for ref in typevar_map.values()}))
 ```
 
-The class-level `typevar_map` property is the same map without constructing a `TypeRef`
-yourself, and `type_params` reports the declaration's free parameters:
+`TypeRef` reports the parameters a declaration is generic over, and resolves the parameters of
+a specialisation to the arguments it was applied with:
 
 ```python exec="on" session="typing"
-from based_datatypes.typing import TypeAwareClass
+from based_datatypes.typing import TypeAwareClass, TypeRef
 
 
 class Cache[K, V](TypeAwareClass):
     """Two-parameter generic."""
 
 
-print(len(Cache.type_params))
-print(len(Cache[str, int].typeargs))
-print(Cache[str, int].type_params)
+print(", ".join(param.__name__ for param in TypeRef(Cache).params))
+print(", ".join(param.__name__ for param in TypeRef(Cache[str, int]).params))
+print(sorted({ref.resolved_type_def.__name__ for ref in TypeRef(Cache[str, int]).typevar_map.values()}))
 ```
 
 ## Replacing type variables

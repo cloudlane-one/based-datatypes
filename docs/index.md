@@ -50,7 +50,7 @@ Each module has a task-oriented guide with runnable examples:
 - :material-file-document-multiple: **[Files and directories](how-to-files.md)**
   One interface for single files and directory trees, with MIME types and typed streams.
 
-- :material-swap-vertical-bold: **[Transport and serialization](how-to-transport.md)**
+- :material-swap-vertical-bold: **[Serialization](how-to-serialize.md)**
   Move objects through JSON, YAML, parquet, arrays, images and more — selected by format,
   scope and losslessness.
 

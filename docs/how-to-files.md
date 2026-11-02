@@ -26,7 +26,7 @@ path.write_text("hello", encoding="utf-8")
 
 file = LocalFile.from_path(path)
 
-print(file.mime, file.io_type.__name__, file.detected_format, file.extension)
+print(file.default_mime, file.io_type.__name__, file.detected_format, file.extension)
 with file.open("r") as stream:
     print(stream.read())
 ```
@@ -42,14 +42,9 @@ Text streams are always UTF-8 and never translate line endings, so the bytes on 
 same on every platform.
 
 ```python exec="on" session="files"
-from typing import TextIO
+from typing import Literal, TextIO
 
-target = LocalFile(
-    dir=file.dir,
-    name="out",
-    mime="application/json",
-    io_type=TextIO,
-)
+target = LocalFile[Literal["application/json"], TextIO](dir=file.dir, name="out")
 with target.open("w") as stream:
     stream.write('{"a": 1}')
 
@@ -67,14 +62,14 @@ table is consulted first, and the extension is derived from the MIME type when a
 constructed from scratch:
 
 ```python exec="on" session="files"
-from typing import TextIO
+from typing import Literal, TextIO
 
 from based_datatypes.files import additional_mime, additional_mime_inv
 
 print(additional_mime[".parquet"])
 print(additional_mime_inv["application/yaml"])
 
-synthetic = LocalFile(dir=file.dir, name="frame", mime="text/csv", io_type=TextIO)
+synthetic = LocalFile[Literal["text/csv"], TextIO](dir=file.dir, name="frame")
 print(synthetic.extension)
 ```
 
@@ -97,7 +92,7 @@ directory = LocalDir(path=tmp.name)
 print(sorted(directory.keys()), len(directory))
 
 print(type(directory["sub"]).__name__, type(directory["notes.txt"]).__name__)
-print(directory.file("notes.txt").mime)
+print(directory.file("notes.txt").default_mime)
 print([name for name, item in directory.items()])
 ```
 
@@ -120,11 +115,9 @@ and for staging content before it is written somewhere. Writes are stored back i
 local file:
 
 ```python exec="on" session="files"
-from typing import TextIO
-
 from based_datatypes.files import MemoryFile
 
-memory = MemoryFile(mime="application/json", io_type=TextIO)
+memory = MemoryFile[Literal["application/json"], TextIO]()
 with memory.open("w") as stream:
     stream.write('{"a": 1}')
 
@@ -140,5 +133,5 @@ Content must match the declared `io_type`: a text file takes `str`, a binary fil
 
 Every file carries an `io_type` (`TextIO` or `BinaryIO`) and a `detected_format` of
 `"text"` or `"binary"`. `from_path` decides from the file's tags, and falls back to the MIME
-type for a path that does not exist yet. Transport drivers use this to reject a text target
+type for a path that does not exist yet. Serializers use this to reject a text target
 for a binary format before any bytes are written.

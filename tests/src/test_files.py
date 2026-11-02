@@ -12,6 +12,8 @@ from based_datatypes.files import (
     LocalDir,
     LocalFile,
     MemoryFile,
+    Read,
+    Write,
     additional_mime,
     additional_mime_inv,
     ensure_dir_exists,
@@ -47,10 +49,14 @@ def make_file(
     Returns:
         The file object.
     """
-    return LocalFile[mime, BinaryIO if binary else TextIO](
-        dir=LocalDir(path=directory),
-        name=name,
-        _suffix=suffix,
+    # A bare string argument would be read as a forward reference, so the MIME
+    # type has to be wrapped in ``Literal`` even when it is only known at runtime.
+    mime_literal: Any = Literal[cast(Any, mime)]
+    file_type: Any = LocalFile[mime_literal, BinaryIO if binary else TextIO]
+
+    return cast(
+        LocalFile[Any],
+        file_type(dir=LocalDir(path=directory), name=name, _suffix=suffix),
     )
 
 
@@ -549,8 +555,8 @@ class OtherFile[M: str, I: TextIO](File[M, I]):
         return cast(I, io.StringIO())
 
 
-class TestFileMatch:
-    """Tests for :meth:`File.match`."""
+class TestFileHintMatching:
+    """Tests for validating a file against a :class:`File` hint."""
 
     def test_matches_mime_and_io_type(self, workdir: Path) -> None:
         """A hint matches when its MIME type and IO type agree."""
@@ -599,3 +605,59 @@ class TestTextStreams:
 
         with cast(TextIO, LocalFile.from_path(path).open("r")) as stream:
             assert stream.read() == "a\r\nb"
+
+
+class TestFileModesAndMatching:
+    """Tests for the read/write mode, the type helpers and hint matching."""
+
+    def test_read_write_mode_of_each_variant(self, workdir: Path) -> None:
+        """The ``R`` argument decides the read/write mode."""
+        read_only: Any = LocalFile[Literal["text/plain"], TextIO, Read]
+        write_only: Any = LocalFile[Literal["text/plain"], TextIO, Write]
+        both: Any = LocalFile[Literal["text/plain"], TextIO, Read | Write]
+
+        assert read_only(dir=LocalDir(path=workdir), name="a").read_write == "r"
+        assert write_only(dir=LocalDir(path=workdir), name="b").read_write == "w"
+        assert both(dir=LocalDir(path=workdir), name="c").read_write == "rw"
+
+    def test_default_variant_is_read_write(self, workdir: Path) -> None:
+        """A file without an ``R`` argument is both readable and writable."""
+        assert make_file(workdir, "f", "text/plain").read_write == "rw"
+
+    def test_to_file_type(self, workdir: Path) -> None:
+        """The file type keeps the MIME type and the IO type."""
+        file = make_file(workdir, "f", "application/json")
+
+        hint = file.to_file_type()
+
+        assert TypeRef(hint).origin is File
+        assert TypeRef(File[Literal["application/json"], TextIO]).validate(file)
+        assert TypeRef.from_instance(file).is_subtype(hint)
+
+    def test_detected_format_of_a_missing_file(self, workdir: Path) -> None:
+        """A file that is not on disk yet is described by its IO type."""
+        assert make_file(workdir, "f", "text/plain").detected_format == "text"
+        assert (
+            make_file(workdir, "f", "application/octet-stream", binary=True).detected_format
+            == "binary"
+        )
+
+    def test_binary_memory_file_accepts_bytes(self) -> None:
+        """Binary content matching the IO type is accepted."""
+        file: Any = MemoryFile[Literal["application/octet-stream"], BinaryIO]
+        instance = file(content=b"\x00")
+
+        assert instance.content == b"\x00"
+        assert instance.detected_format == "binary"
+
+    def test_binary_read_mode_rejects_writes(self) -> None:
+        """A binary read-only stream refuses writes and keeps the content."""
+        file: Any = MemoryFile[Literal["application/octet-stream"], BinaryIO]
+        instance = file(content=b"keep")
+
+        with cast(BinaryIO, instance.open("r")) as stream:
+            assert not stream.writable()
+            with pytest.raises(io.UnsupportedOperation):
+                stream.write(b"nope")
+
+        assert instance.content == b"keep"

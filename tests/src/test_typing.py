@@ -7,9 +7,11 @@ from typing import Annotated, Any, ForwardRef, Literal, TypeVar, get_args
 
 import pydantic
 import pytest
+from beartype.door import is_bearable
 
 from based_datatypes import typing as bt
-from based_datatypes.typing import TypeAwareClass, TypeRef
+from based_datatypes.files import File, LocalFile
+from based_datatypes.typing import TypeAwareClass, TypeRef, is_subtype
 
 T = TypeVar("T")
 T_bound = TypeVar("T_bound", bound=int)
@@ -284,7 +286,8 @@ def test_typeref_typeform_substitutes_typevars() -> None:
     )
     assert (
         TypeRef(
-            Box[T], subs={T: TypeRef(int)}  # pyright: ignore[reportGeneralTypeIssues]
+            Box[T],  # pyright: ignore[reportGeneralTypeIssues]
+            subs={T: TypeRef(int)},
         ).resolved_type_def
         == Box[int]
     )
@@ -497,3 +500,34 @@ def test_decimal_is_a_supported_ordinal() -> None:
     from based_datatypes.types import Ordinal
 
     assert Decimal in get_args(Ordinal.__value__)
+
+
+class TestTypeAwareComparison:
+    """Tests for comparing applied ``TypeAwareClass`` hints."""
+
+    def test_arguments_decide_the_subtype_relation(self) -> None:
+        """A file hint fits only a hint whose MIME type and IO type it satisfies."""
+        assert is_subtype(
+            File[Literal["application/json"], Any],
+            File[Literal["application/json", "application/yaml"], Any],
+        )
+        assert not is_subtype(
+            File[Literal["application/pickle"], Any],
+            File[Literal["application/json"], Any],
+        )
+
+    def test_trailing_parameters_may_be_omitted(self) -> None:
+        """A hint that supplies fewer arguments still compares the ones it has."""
+        assert is_subtype(
+            LocalFile[Literal["application/json"], Any, Any],
+            File[Literal["application/json"], Any],
+        )
+
+    def test_beartype_does_not_inspect_arguments_of_a_value(self) -> None:
+        """beartype ignores the type arguments of an instance, which is why we compare them.
+
+        This pins the reason :meth:`TypeRef.validate` compares ``TypeAwareClass``
+        hints structurally: if beartype ever starts honouring generic arguments of
+        values, that comparison could delegate to it.
+        """
+        assert is_bearable(Box[int](), Box[str])

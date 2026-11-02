@@ -19,7 +19,7 @@ nav:
       - Hashing: how-to-hashing.md
       - Data utilities: how-to-data.md
       - Files and directories: how-to-files.md
-      - Transport and serialization: how-to-transport.md
+      - Serialization: how-to-serialize.md
       - Descriptors: how-to-descriptors.md
       - Object references: how-to-refs.md
       - Distributions: how-to-dist.md

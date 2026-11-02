@@ -32,7 +32,7 @@ from typing import (
 
 from annotationlib import get_annotations
 from beartype.door import is_bearable, is_subhint
-from beartype.roar import BeartypeDoorNonpepException
+from beartype.roar import BeartypeDoorNonpepException, BeartypeException
 from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 from typing_extensions import Sentinel, TypeForm
@@ -507,6 +507,19 @@ class TypeRef(Generic[T]):  # noqa: UP046
                 if isinstance(params, tuple) and len(params) > 0:
                     return params
 
+        # An applied ``TypeAwareClass`` subclass carries its arguments in
+        # ``__args__`` while neither it nor its origin declares parameters: the
+        # generic base it derives from names them (``LocalFile`` derives from
+        # ``File[M, I, R]``, so ``LocalFile[...]`` is parameterised by ``M``,
+        # ``I`` and ``R``).
+        origin = self.origin
+        if isinstance(origin, type):
+            for base in origin.__dict__.get("__orig_bases__", origin.__bases__):
+                param_args = getattr(base, "__args__", ())
+                params = tuple(arg for arg in param_args if isinstance(arg, TypeVar))
+                if len(params) > 0:
+                    return params
+
         return ()
 
     @cached_property
@@ -574,8 +587,13 @@ class TypeRef(Generic[T]):  # noqa: UP046
                     continue
 
                 if isinstance(p, TypeVar):
-                    # In case of a normal typevar, map the next arg.
-                    raw_arg_map[p] = remaining_args.pop()
+                    # In case of a normal typevar, map the next arg. An identity
+                    # binding (the parameter passed to itself) means no argument
+                    # was applied at this level, so it must not shadow a
+                    # substitution handed down from a subclass.
+                    arg = remaining_args.pop()
+                    if arg is not p or p not in self.subs:
+                        raw_arg_map[p] = arg
                 elif isinstance(p, TypeVarTuple):
                     # In case of a typevar-tuple, map all remaining args
                     # minus those associated to downstream typevars.
@@ -1054,6 +1072,9 @@ class TypeRef(Generic[T]):  # noqa: UP046
         Returns:
             ``True`` if the object is of this type, ``False`` otherwise.
         """
+        if _typeaware_relation(TypeRef.from_instance(obj), self) is False:
+            return False
+
         if not is_bearable(obj, cast(Any, self.resolved_type_def)):
             return False
 
@@ -1081,12 +1102,16 @@ class TypeRef(Generic[T]):  # noqa: UP046
             ``True`` if this reference is a subtype of ``supertype``.
         """
         super_typeref = TypeRef(supertype)
+        relation = _typeaware_relation(self, super_typeref)
+        if relation is not None:
+            return relation
+
         try:
             return is_subhint(
                 cast(Any, self.resolved_type_def),
                 cast(Any, super_typeref.resolved_type_def),
             )
-        except (BeartypeDoorNonpepException, TypeError):
+        except (BeartypeDoorNonpepException, BeartypeException, TypeError):
             # Fallback for hints beartype cannot compare: compare the concrete typesets.
             return len(super_typeref.typeset) > 0 and all(
                 issubclass(t, tuple(super_typeref.typeset)) for t in self.typeset
@@ -1102,16 +1127,98 @@ class TypeRef(Generic[T]):  # noqa: UP046
             ``True`` if this reference is a supertype of ``subtype``.
         """
         sub_typeref = TypeRef(subtype)
+        relation = _typeaware_relation(sub_typeref, self)
+        if relation is not None:
+            return relation
+
         try:
             return is_subhint(
                 cast(Any, sub_typeref.resolved_type_def),
                 cast(Any, self.resolved_type_def),
             )
-        except (BeartypeDoorNonpepException, TypeError):
+        except (BeartypeDoorNonpepException, BeartypeException, TypeError):
             # Fallback for hints beartype cannot compare: compare the concrete typesets.
             return len(self.typeset) > 0 and all(
                 issubclass(t, tuple(self.typeset)) for t in sub_typeref.typeset
             )
+
+
+def _typeaware_relation(sub: TypeRef[Any], sup: TypeRef[Any]) -> bool | None:
+    """Compare two applied :class:`TypeAwareClass` hints structurally.
+
+    An applied ``TypeAwareClass`` is a real class whose type arguments sit in
+    ``__args__``, which is also how a PEP 484/585 user generic looks. beartype can
+    compare those — it walks ``__orig_bases__`` to find the parameterised base —
+    but it requires ``__args__`` to cover the *whole* parameter list, while an
+    alias here records only the arguments that were supplied (``File[mime]`` has
+    one of ``File``'s three). Its argument-count check therefore raises
+    ``BeartypeDoorIsSubhintException`` on every such comparison.
+
+    Instance validation cannot delegate either: beartype never inspects generic
+    arguments of a value, for a real PEP 695 generic as much as for these aliases
+    (``is_bearable(Box[int](), Box[str])`` is ``True``). Such aliases are compared
+    here instead, by origin class and then by argument — which is also the only
+    way to match the declared MIME type of a :class:`~based_datatypes.files.File`.
+
+    Arguments are matched positionally and stop at the shorter of the two, so a
+    hint that omits trailing parameters (which then fall back to their defaults)
+    still matches. ``Any`` in ``sup`` matches anything; a ``Literal`` in ``sup``
+    matches when the literal values of ``sub`` are a subset; every other argument
+    is compared with :meth:`TypeRef.is_subtype`.
+
+    Args:
+        sub: The type reference that is checked for fitting into ``sup``.
+        sup: The type reference that is checked for accepting ``sub``.
+
+    Returns:
+        ``True`` or ``False`` when both hints are applied ``TypeAwareClass``
+        aliases, ``None`` when the comparison does not apply and the caller
+        should fall back to beartype.
+    """
+    sub_hint = sub.type_def
+    sup_hint = sup.type_def
+
+    if not (
+        isinstance(sub_hint, type)
+        and isinstance(sup_hint, type)
+        and issubclass(sub_hint, TypeAwareClass)
+        and issubclass(sup_hint, TypeAwareClass)
+    ):
+        return None
+
+    if sub_hint is sup_hint:
+        return True
+
+    sub_origin = getattr(sub_hint, "__origin__", sub_hint)
+    sup_origin = getattr(sup_hint, "__origin__", sup_hint)
+
+    if not (isinstance(sub_origin, type) and issubclass(sub_origin, sup_origin)):
+        return False
+
+    sup_args = getattr(sup_hint, "__args__", ())
+
+    if len(sup_args) == 0:
+        return True
+
+    sub_args = getattr(sub_hint, "__args__", ())
+
+    if len(sub_args) == 0:
+        # An unparameterised instance makes no promise about its arguments.
+        return False
+
+    for sub_arg, sup_arg in zip(sub_args, sup_args):
+        if sup_arg is Any:
+            continue
+
+        sup_literals = TypeRef(sup_arg).literal_values
+
+        if len(sup_literals) > 0:
+            if not set(TypeRef(sub_arg).literal_values) <= set(sup_literals):
+                return False
+        elif not TypeRef(sub_arg).is_subtype(sup_arg):
+            return False
+
+    return True
 
 
 def has_type[T](instance: Any, typedef: TypeForm[T] | TypeDef[T]) -> TypeGuard[T]:

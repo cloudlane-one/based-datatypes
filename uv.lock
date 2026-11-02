@@ -188,7 +188,7 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-common-transport = [
+common-serializers = [
     { name = "beautifulsoup4" },
     { name = "fastexcel" },
     { name = "numpy" },
@@ -208,7 +208,7 @@ app = [
     { name = "rich" },
 ]
 ci = [
-    { name = "based-datatypes", extra = ["common-transport"] },
+    { name = "based-datatypes", extra = ["common-serializers"] },
     { name = "black" },
     { name = "debugpy" },
     { name = "deptry" },
@@ -237,7 +237,7 @@ ci = [
     { name = "vscode-task-runner" },
 ]
 dev = [
-    { name = "based-datatypes", extra = ["common-transport"] },
+    { name = "based-datatypes", extra = ["common-serializers"] },
     { name = "black" },
     { name = "debugpy" },
     { name = "deptry" },
@@ -291,29 +291,29 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "beartype", specifier = ">=0.23.1,<0.24.0" },
-    { name = "beautifulsoup4", marker = "extra == 'common-transport'", specifier = ">=4.15.0,<5.0.0" },
-    { name = "fastexcel", marker = "extra == 'common-transport'", specifier = ">=0.14.0,<1.0.0" },
+    { name = "beautifulsoup4", marker = "extra == 'common-serializers'", specifier = ">=4.15.0,<5.0.0" },
+    { name = "fastexcel", marker = "extra == 'common-serializers'", specifier = ">=0.14.0,<1.0.0" },
     { name = "gitpython", specifier = ">=3.1.62,<4.0.0" },
     { name = "identify", specifier = ">=2.6.20,<3.0.0" },
-    { name = "numpy", marker = "extra == 'common-transport'", specifier = ">=2.5.4,<3.0.0" },
-    { name = "openpyxl", marker = "extra == 'common-transport'", specifier = ">=3.1.5,<4.0.0" },
+    { name = "numpy", marker = "extra == 'common-serializers'", specifier = ">=2.5.4,<3.0.0" },
+    { name = "openpyxl", marker = "extra == 'common-serializers'", specifier = ">=3.1.5,<4.0.0" },
     { name = "packaging", specifier = ">=26.3,<27.0" },
     { name = "pandas", specifier = ">=3.1.0,<4.0.0" },
-    { name = "pillow", marker = "extra == 'common-transport'", specifier = ">=13.0.0,<14.0.0" },
+    { name = "pillow", marker = "extra == 'common-serializers'", specifier = ">=13.0.0,<14.0.0" },
     { name = "polars", specifier = ">=2.1.0,<3.0.0" },
-    { name = "pyarrow", marker = "extra == 'common-transport'", specifier = ">=21.0.0,<30.0.0" },
+    { name = "pyarrow", marker = "extra == 'common-serializers'", specifier = ">=21.0.0,<30.0.0" },
     { name = "pydantic", specifier = ">=2.13.5,<3.0.0" },
     { name = "pydantic-core", specifier = ">=2.46.5,<3.0.0" },
     { name = "pyyaml", specifier = ">=6.0.3,<7.0.0" },
     { name = "requests", specifier = ">=2.34.2,<3.0.0" },
     { name = "sphinx", specifier = ">=9.2.0,<10.0.0" },
-    { name = "sqlalchemy", marker = "extra == 'common-transport'", specifier = ">=2.1.6,<3.0.0" },
+    { name = "sqlalchemy", marker = "extra == 'common-serializers'", specifier = ">=2.1.6,<3.0.0" },
     { name = "sqlparse", specifier = ">=0.6.0,<0.7.0" },
     { name = "typing-extensions", specifier = ">=4.15,<5.0.0" },
-    { name = "xlsxwriter", marker = "extra == 'common-transport'", specifier = ">=3.2.9,<4.0.0" },
+    { name = "xlsxwriter", marker = "extra == 'common-serializers'", specifier = ">=3.2.9,<4.0.0" },
     { name = "yarl", specifier = ">=1.25.1,<2.0.0" },
 ]
-provides-extras = ["common-transport"]
+provides-extras = ["common-serializers"]
 
 [package.metadata.requires-dev]
 app = [
@@ -324,7 +324,7 @@ app = [
     { name = "rich", specifier = ">=15.0.0,<16.0.0" },
 ]
 ci = [
-    { name = "based-datatypes", extras = ["common-transport"] },
+    { name = "based-datatypes", extras = ["common-serializers"] },
     { name = "black", specifier = ">=26.3.1,<27.0.0" },
     { name = "debugpy", specifier = ">=1.8.20" },
     { name = "deptry", specifier = ">=0.25.1,<0.26.0" },
@@ -353,7 +353,7 @@ ci = [
     { name = "vscode-task-runner", specifier = ">=3.0.1,<4.0.0" },
 ]
 dev = [
-    { name = "based-datatypes", extras = ["common-transport"] },
+    { name = "based-datatypes", extras = ["common-serializers"] },
     { name = "black", specifier = ">=26.3.1,<27.0.0" },
     { name = "debugpy", specifier = ">=1.8.20" },
     { name = "deptry", specifier = ">=0.25.1,<0.26.0" },
