@@ -27,8 +27,9 @@ from typing import (
 
 from identify.identify import tags_from_filename, tags_from_path
 
-from based_datatypes.types import TypeNode
-from based_datatypes.typing import TypeRef
+from based_datatypes.descriptors import prop
+from based_datatypes.types import TypeDef
+from based_datatypes.typing import TypeAwareClass, is_subtype
 
 
 def ensure_dir_exists(path: Path | str) -> Path:
@@ -94,14 +95,37 @@ R = TypeVar("R", bound=Read | Write, contravariant=True, default=Read | Write)
 
 
 @dataclass(kw_only=True)
-class File(ABC, Generic[M, I, R]):
+class File(ABC, TypeAwareClass, Generic[M, I, R]):
     """A generic, single file (may be within a file system or object storage)."""
-
-    mime: M
-    io_type: type[I]
 
     _suffix: str | None = None
     """Explicit file suffix; ``None`` derives it from the MIME type."""
+
+    @prop(cached=True, mode="dual")
+    def mimes(self) -> list[M]:
+        """MIME types of the file."""
+        return cast(list[M], list(self.typeref.scalar_typevar_map[M].literal_values))
+
+    @prop(cached=True, mode="dual")
+    def io_type(self) -> TypeDef[I]:
+        """The IO type of the file."""
+        typeref = self.typeref.scalar_typevar_map[I]
+        return cast(type[I], typeref.resolved_type_def)
+
+    @prop(cached=True, mode="dual")
+    def read_write(self) -> Literal["rw", "r", "w"]:
+        """The read/write mode of the file."""
+        typeref = self.typeref.scalar_typevar_map[R]
+        return (
+            "rw"
+            if typeref.is_supertype(Read | Write)
+            else "r" if typeref.is_supertype(Read) else "w"
+        )
+
+    @property
+    def default_mime(self) -> M:
+        """Default MIME type of the file."""
+        return self.mimes[0]
 
     @cached_property
     def extension(self) -> str:
@@ -109,12 +133,12 @@ class File(ABC, Generic[M, I, R]):
         if self._suffix is not None:
             return self._suffix
 
-        ext = additional_mime_inv.get(self.mime, [None])[0]
+        ext = additional_mime_inv.get(self.default_mime, [None])[0]
         if ext is None:
-            ext = guess_extension(self.mime, strict=False)
+            ext = guess_extension(self.default_mime, strict=False)
 
         if ext is None:
-            ext = ".txt" if issubclass(self.io_type, TextIO) else ".bin"
+            ext = ".txt" if is_subtype(self.io_type, TextIO) else ".bin"
 
         assert ext is not None, "Could not determine file extension"
         return ext
@@ -142,13 +166,17 @@ class File(ABC, Generic[M, I, R]):
         finally:
             io.close()
 
-    def match(self, hint: TypeNode[Any]) -> bool:
-        """Check if the file matches the given type hint."""
-        return TypeRef(hint).validate(self)
+    def to_file_type(self) -> TypeDef[File[M, I, R]]:
+        """Return a TypeDef for this file type."""
+        return File[
+            cast(type[M], Literal[self.default_mime]),
+            cast(type[I], self.io_type),
+            Any,
+        ]
 
 
 @dataclass
-class LocalFile(File[M, TextIO | BinaryIO, R]):
+class LocalFile(File[M, I, R]):
     """A generic, single file (may be within a file system or object storage)."""
 
     dir: LocalDir
@@ -171,11 +199,9 @@ class LocalFile(File[M, TextIO | BinaryIO, R]):
         tags = tags_from_path(str(path)) if path.exists() else tags_from_filename(str(path))
         io_type = TextIO if "text" in tags else BinaryIO
 
-        return LocalFile(
+        return LocalFile[cast(type[LiteralString], Literal[mime]), io_type, Any](
             dir=LocalDir(path=dir_path),
             name=name,
-            mime=mime,
-            io_type=io_type,
             _suffix=path.suffix,
         )
 
@@ -189,7 +215,7 @@ class LocalFile(File[M, TextIO | BinaryIO, R]):
         """Default encoding based on filename and content."""
         path = Path(self.path)
         if not path.exists():
-            return "text" if issubclass(self.io_type, TextIO) else "binary"
+            return "text" if is_subtype(self.io_type, TextIO) else "binary"
 
         file_tags = tags_from_path(str(path))
         return "text" if "text" in file_tags else "binary"
@@ -206,16 +232,16 @@ class LocalFile(File[M, TextIO | BinaryIO, R]):
             return "wb+" if encoding == "binary" else "w+"
 
     @override
-    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> TextIO | BinaryIO:
+    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> I:
         """Return the file's content as a text IO stream.
 
         Text streams always use UTF-8 with newline translation disabled, so the
         bytes on disk do not depend on the platform or locale and match what the
         transport estimators measure.
         """
-        if issubclass(self.io_type, TextIO):
+        if is_subtype(self.io_type, TextIO):
             return cast(
-                TextIO,
+                I,
                 open(
                     self.path,
                     mode=self.get_file_mode(mode, "text"),
@@ -224,13 +250,13 @@ class LocalFile(File[M, TextIO | BinaryIO, R]):
                 ),
             )
 
-        return cast(BinaryIO, open(self.path, mode=self.get_file_mode(mode, "binary")))
+        return cast(I, open(self.path, mode=self.get_file_mode(mode, "binary")))
 
 
 class _TextMemoryStream(io.StringIO):
     """A text stream that stores its content back into a :class:`MemoryFile`."""
 
-    def __init__(self, file: MemoryFile[Any, Any], initial: str, *, writable: bool) -> None:
+    def __init__(self, file: MemoryFile[Any, Any, Any], initial: str, *, writable: bool) -> None:
         super().__init__(initial)
         self._file = file
         self._writable = writable
@@ -258,7 +284,7 @@ class _TextMemoryStream(io.StringIO):
 class _BinaryMemoryStream(io.BytesIO):
     """A binary stream that stores its content back into a :class:`MemoryFile`."""
 
-    def __init__(self, file: MemoryFile[Any, Any], initial: bytes, *, writable: bool) -> None:
+    def __init__(self, file: MemoryFile[Any, Any, Any], initial: bytes, *, writable: bool) -> None:
         super().__init__(initial)
         self._file = file
         self._writable = writable
@@ -284,7 +310,7 @@ class _BinaryMemoryStream(io.BytesIO):
 
 
 @dataclass
-class MemoryFile(File[M, TextIO | BinaryIO, R]):
+class MemoryFile(File[M, I, R]):
     """A file whose content lives in memory instead of on a storage medium.
 
     Useful for tests, for staging content before it is written somewhere, and
@@ -300,8 +326,8 @@ class MemoryFile(File[M, TextIO | BinaryIO, R]):
     def __post_init__(self) -> None:
         """Normalize the content to the type implied by ``io_type``."""
         if self.content is None:
-            self.content = "" if issubclass(self.io_type, TextIO) else b""
-        elif issubclass(self.io_type, TextIO):
+            self.content = "" if is_subtype(self.io_type, TextIO) else b""
+        elif is_subtype(self.io_type, TextIO):
             if not isinstance(self.content, str):
                 raise TypeError("A text file requires str content.")
         elif not isinstance(self.content, bytes):
@@ -310,10 +336,10 @@ class MemoryFile(File[M, TextIO | BinaryIO, R]):
     @cached_property
     def detected_format(self) -> Literal["text", "binary"]:
         """Return the format implied by the declared IO type."""
-        return "text" if issubclass(self.io_type, TextIO) else "binary"
+        return "text" if is_subtype(self.io_type, TextIO) else "binary"
 
     @override
-    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> TextIO | BinaryIO:
+    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> I:
         """Return a stream over the file's content.
 
         Writes are stored back into :attr:`content` when the stream is closed.
@@ -323,17 +349,23 @@ class MemoryFile(File[M, TextIO | BinaryIO, R]):
         initial = self.content if mode == "r" else None
         writable = mode != "r"
 
-        if issubclass(self.io_type, TextIO):
-            return _TextMemoryStream(
-                self,
-                cast(str, initial) if initial is not None else "",
-                writable=writable,
+        if is_subtype(self.io_type, TextIO):
+            return cast(
+                I,
+                _TextMemoryStream(
+                    self,
+                    cast(str, initial) if initial is not None else "",
+                    writable=writable,
+                ),
             )
 
-        return _BinaryMemoryStream(
-            self,
-            cast(bytes, initial) if initial is not None else b"",
-            writable=writable,
+        return cast(
+            I,
+            _BinaryMemoryStream(
+                self,
+                cast(bytes, initial) if initial is not None else b"",
+                writable=writable,
+            ),
         )
 
 

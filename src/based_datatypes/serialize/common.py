@@ -6,19 +6,29 @@ import json
 import pickle
 import xml.etree.ElementTree as xml  # noqa: N813
 from collections.abc import Iterable, Sequence
-from types import UnionType
-from typing import Any, BinaryIO, Literal, TextIO, TypeVar, cast, get_origin
+from typing import Any, BinaryIO, Literal, TextIO, TypeVar, cast, get_origin, override
 
 import polars as pl
 import sqlparse
 import yaml
 
+from based_datatypes.descriptors import cached_method
 from based_datatypes.files import File
+from based_datatypes.types import TypeDef
 from based_datatypes.typing import TypeNode, TypeRef
 
-from .base import IPC, V2, Open, TransportDriver, TransportScope, current_ser_purpose
+from .base import (
+    V2,
+    JSONDict,
+    Open,
+    Realm,
+    SerializationTarget,
+    Serializer,
+    TransportScope,
+    current_ser_ctx,
+)
 
-common_drivers: dict[TypeNode | UnionType, type[TransportDriver]] = {}
+common_serializers: list[Serializer] = []
 
 
 # Simple, stringifiable types
@@ -32,24 +42,6 @@ TF = TypeVar(
 
 type StrScalar = str | int | float | complex | bool | None
 type Stringifiable = StrScalar | list[StrScalar]
-
-
-type JSONFile = (
-    File[Literal["application/yaml"], TextIO] | File[Literal["application/json"], TextIO]
-)
-JF = TypeVar(
-    "JF",
-    bound=JSONFile,
-    default=JSONFile,
-)
-
-# JSON / YAML dict
-
-type JSONScalar = str | int | float | bool | None
-type JSONValue = JSONScalar | dict[str, JSONValue] | list[JSONValue]
-type JSONDict = dict[str, JSONValue]
-
-J = TypeVar("J", bound=JSONDict, default=JSONDict)
 
 
 def check_type_and_cast[T](obj: Any, annotation: TypeNode[T] | None = None) -> T:
@@ -99,59 +91,128 @@ def _sample_step(total: int, limit: int = 100) -> int:
     return max(total // limit, 1)
 
 
-class JSONTransporter(TransportDriver[JSONDict, JSONFile]):
-    """Transporter for JSON and YAML dictionaries."""
+# JSON / YAML dict
 
-    @classmethod
-    def __lossless_formats__(cls) -> frozenset[str]:
-        """JSON and YAML reproduce a JSON-shaped dictionary exactly."""
-        return frozenset({"application/json", "application/yaml"})
+type JSONFile = (
+    File[Literal["application/yaml"], TextIO] | File[Literal["application/json"], TextIO]
+)
+JF = TypeVar(
+    "JF",
+    bound=JSONFile,
+    default=JSONFile,
+)
 
-    @classmethod
-    def estimate_bytes(
-        cls,
-        instance: JSONDict,
-        target: JSONFile,
-        realm: Any,
-        annotation: TypeNode[JSONDict] | None = None,
-    ) -> int:
-        """Measure the encoded dictionary without writing it."""
-        return _encoded_size(_serialize_json(instance, target.mime))
+J = TypeVar("J", bound=JSONDict, default=JSONDict)
 
-    @classmethod
-    def import_object(
-        cls: type[TransportDriver[V2, JSONFile]],
-        source: JSONFile,
-        realm: Any,
-        annotation: TypeNode[V2] | None = None,
+
+class JSONSerializer(Serializer[JSONDict, JSONDict | JSONFile]):
+    """Serializer for JSON and YAML dictionaries."""
+
+    @override
+    @cached_method
+    def serialization_targets(self) -> list[SerializationTarget[JSONDict | JSONFile, Any, Any]]:
+        """Serialization targets supported by this transport driver."""
+        return [SerializationTarget(type=JSONDict | JSONFile, scope=Open(), lossless=True)]
+
+        @classmethod
+        def import_object(
+            cls: type[Serializer[V2, JSONFile]],
+            source: JSONFile,
+            realm: Any,
+            annotation: TypeNode[V2] | None = None,
+        ) -> V2:
+            """Parse a dictionary from a JSON or YAML file."""
+            dct: dict
+
+            with source.open("r") as f:
+                if source.mime == "application/yaml":
+                    dct = yaml.load(f, Loader=yaml.CSafeLoader)
+                else:
+                    dct = json.load(f)
+
+            return check_type_and_cast(dct, annotation)
+
+        @classmethod
+        def export_object(
+            cls,
+            instance: JSONDict,
+            target: JSONFile,
+            realm: Any,
+            annotation: TypeNode[JSONDict] | None = None,
+        ) -> None:
+            """Convert a dictionary to a JSON or YAML file."""
+            text = _serialize_json(instance, target.mime)
+
+            with target.open("w") as f:
+                f.write(text)
+
+    @override
+    def serialize(
+        self,
+        source: JSONDict | JSONFile,
+        scope: TransportScope = Open(),
+        realm: Realm | None = None,
+        annotation: TypeDef[V2] | None = None,
     ) -> V2:
-        """Parse a dictionary from a JSON or YAML file."""
-        dct: dict
+        """Import an object from the source type or format.
 
-        with source.open("r") as f:
-            if source.mime == "application/yaml":
-                dct = yaml.load(f, Loader=yaml.CSafeLoader)
-            else:
-                dct = json.load(f)
+        Args:
+            source: The source object to import from.
+            scope: The transport scope to use for the import.
+            realm: The realm to import from.
+            annotation: The declared type of the object, if any.
 
-        return check_type_and_cast(dct, annotation)
+        Returns:
+            An instance of the object, imported from the source.
+        """
+        ...
 
-    @classmethod
-    def export_object(
-        cls,
+    @override
+    def serialize(
+        self: Serializer[V2, T2],
+        instance: V2,
+        target_type: TypeDef[T2],
+        lossless: bool = True,
+        scope: TransportScope = Open(),
+        realm: Realm | None = None,
+        target: T2 | None = None,
+        annotation: TypeDef[Serializable[T2]] | None = None,
+    ) -> T2:
+        """Export an object to the target type or format.
+
+        Args:
+            instance: The object to export.
+            target_type: The target type or format to export to.
+            lossless: Whether to require a lossless export.
+            scope: The transport scope to use for the export.
+            realm: The realm to export to.
+            target: An optional pre-allocated target object to export into.
+            annotation: The declared type of the object, if any.
+
+        Returns:
+            The exported target object.
+        """
+        ...
+
+    @override
+    def estimate_serialized_size(
+        self,
         instance: JSONDict,
-        target: JSONFile,
-        realm: Any,
-        annotation: TypeNode[JSONDict] | None = None,
-    ) -> None:
-        """Convert a dictionary to a JSON or YAML file."""
-        text = _serialize_json(instance, target.mime)
+        target_type: TypeDef[JSONDict | JSONFile],
+        lossless: bool = True,
+        scope: TransportScope = Open(),
+        realm: Realm | None = None,
+        target: JSONDict | JSONFile | None = None,
+        annotation: TypeDef[JSONDict] | None = None,
+    ) -> int:
+        return _encoded_size(
+            _serialize_json(
+                instance, target.default_mime if target is not None else "application/json"
+            )
+        )
 
-        with target.open("w") as f:
-            f.write(text)
 
-
-common_drivers[JSONDict] = JSONTransporter
+common_serializers[JSONDict] = JSONSerializer
 
 
 # XML etree
@@ -174,7 +235,7 @@ def _serialize_xml(instance: xml.ElementTree) -> str:
     return xml.tostring(root, encoding="unicode")
 
 
-class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
+class XMLTransporter(Serializer[xml.ElementTree, XMLFile]):
     """Transporter for XML ElementTree."""
 
     @classmethod
@@ -183,7 +244,7 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
         return frozenset({"application/xml", "text/xml"})
 
     @classmethod
-    def estimate_bytes(
+    def estimate_serialized_size(
         cls,
         instance: xml.ElementTree,
         target: XMLFile,
@@ -194,15 +255,15 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
         return _encoded_size(_serialize_xml(instance))
 
     @classmethod
-    def import_object(
-        cls: type[TransportDriver[V2, XMLFile]],
+    def serialize(
+        cls: type[Serializer[V2, XMLFile]],
         source: XMLFile,
         realm: Any,
         annotation: TypeNode[V2] | None = None,
     ) -> V2:
         """Parse an XML ElementTree from a file."""
-        if source.mime not in {"application/xml", "text/xml"}:
-            raise ValueError(f"Unsupported MIME type: {source.mime}")
+        if source.default_mime not in {"application/xml", "text/xml"}:
+            raise ValueError(f"Unsupported MIME type: {source.default_mime}")
 
         # The default builder drops comments and processing instructions, which
         # would break the lossless round trip this driver declares.
@@ -213,7 +274,7 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
         return check_type_and_cast(tree, annotation)
 
     @classmethod
-    def export_object(
+    def serialize(
         cls,
         instance: xml.ElementTree,
         target: XMLFile,
@@ -221,25 +282,25 @@ class XMLTransporter(TransportDriver[xml.ElementTree, XMLFile]):
         annotation: TypeNode[xml.ElementTree] | None = None,
     ) -> None:
         """Convert an XML ElementTree to a file."""
-        assert target.mime in {"application/xml", "text/xml"}
+        assert target.default_mime in {"application/xml", "text/xml"}
         text = _serialize_xml(instance)
 
         with target.open("w") as f:
             f.write(text)
 
 
-common_drivers[xml.ElementTree] = XMLTransporter
+common_serializers[xml.ElementTree] = XMLTransporter
 
 
 # Pydantic models
 try:
     import pydantic as pyd
 
-    class PydTransporter(TransportDriver[pyd.BaseModel, JSONFile]):
+    class PydTransporter(Serializer[pyd.BaseModel, JSONFile]):
         """Transporter for Pydantic models."""
 
         @classmethod
-        def estimate_bytes(
+        def estimate_serialized_size(
             cls,
             instance: pyd.BaseModel,
             target: JSONFile,
@@ -247,18 +308,20 @@ try:
             annotation: TypeNode[pyd.BaseModel] | None = None,
         ) -> int:
             """Measure the serialized model without writing it."""
-            return _encoded_size(_serialize_json(instance.model_dump(mode="json"), target.mime))
+            return _encoded_size(
+                _serialize_json(instance.model_dump(mode="json"), target.default_mime)
+            )
 
         @classmethod
-        def import_object(
-            cls: type[TransportDriver[V2, JSONFile]],
+        def serialize(
+            cls: type[Serializer[V2, JSONFile]],
             source: JSONFile,
             realm: Any,
             annotation: TypeNode[V2] | None = None,
         ) -> V2:
             """Parse a Pydantic model from a JSON or YAML file."""
             with source.open("r") as f:
-                if source.mime == "application/yaml":
+                if source.default_mime == "application/yaml":
                     data = yaml.load(f, Loader=yaml.CSafeLoader)
                 else:
                     data = json.load(f)
@@ -270,7 +333,7 @@ try:
             return adapter.validate_python(data)
 
         @classmethod
-        def export_object(
+        def serialize(
             cls,
             instance: pyd.BaseModel,
             target: JSONFile,
@@ -281,12 +344,12 @@ try:
             # ``mode="json"`` converts dates, UUIDs and decimals to JSON-native
             # values before the target is opened, so a value the encoder rejects
             # cannot truncate an existing file and YAML's safe dumper accepts it.
-            text = _serialize_json(instance.model_dump(mode="json"), target.mime)
+            text = _serialize_json(instance.model_dump(mode="json"), target.default_mime)
 
             with target.open("w") as f:
                 f.write(text)
 
-    common_drivers[pyd.BaseModel] = PydTransporter
+    common_serializers[pyd.BaseModel] = PydTransporter
 except ImportError:
     pass
 
@@ -302,7 +365,7 @@ type DfFile = (
 try:
     import pandas as pd
 
-    class PdTransporter(TransportDriver[pd.DataFrame, DfFile]):
+    class PdTransporter(Serializer[pd.DataFrame, DfFile]):
         """Transporter for Pandas DataFrames."""
 
         @classmethod
@@ -311,7 +374,7 @@ try:
             return frozenset({"application/vnd.apache.parquet"})
 
         @classmethod
-        def estimate_bytes(
+        def estimate_serialized_size(
             cls,
             instance: pd.DataFrame,
             target: DfFile,
@@ -319,7 +382,7 @@ try:
             annotation: TypeNode[pd.DataFrame] | None = None,
         ) -> int:
             """Estimate the encoded size, sampling CSV output by row."""
-            if target.mime == "text/csv":
+            if target.default_mime == "text/csv":
                 total = len(instance)
                 if total == 0:
                     return 0
@@ -330,28 +393,28 @@ try:
             return int(instance.memory_usage(deep=True).sum())
 
         @classmethod
-        def import_object(
-            cls: type[TransportDriver[V2, DfFile]],
+        def serialize(
+            cls: type[Serializer[V2, DfFile]],
             source: DfFile,
             realm: Any,
             annotation: TypeNode[V2] | None = None,
         ) -> V2:
             """Parse a DataFrame from a CSV or Parquet file."""
             with source.open("r") as f:
-                if source.mime == "text/csv":
+                if source.default_mime == "text/csv":
                     res = pd.read_csv(f)
-                elif source.mime == "application/vnd.apache.parquet":
+                elif source.default_mime == "application/vnd.apache.parquet":
                     f = cast(BinaryIO, f)
                     res = pd.read_parquet(f)
-                elif source.mime == "application/vnd.ms-excel":
+                elif source.default_mime == "application/vnd.ms-excel":
                     res = pd.read_excel(f)
                 else:
-                    raise ValueError(f"Unsupported MIME type: {source.mime}")
+                    raise ValueError(f"Unsupported MIME type: {source.default_mime}")
 
             return check_type_and_cast(res, annotation)
 
         @classmethod
-        def export_object(
+        def serialize(
             cls,
             instance: pd.DataFrame,
             target: DfFile,
@@ -360,25 +423,25 @@ try:
         ) -> None:
             """Convert a DataFrame to a CSV or Parquet file."""
             with target.open("w") as f:
-                if target.mime == "text/csv":
+                if target.default_mime == "text/csv":
                     instance.to_csv(f, index=False)
-                elif target.mime == "application/vnd.apache.parquet":
+                elif target.default_mime == "application/vnd.apache.parquet":
                     f = cast(BinaryIO, f)
                     instance.to_parquet(f)
-                elif target.mime == "application/vnd.ms-excel":
+                elif target.default_mime == "application/vnd.ms-excel":
                     f = cast(BinaryIO, f)
                     instance.to_excel(f, index=False)
                 else:
-                    raise ValueError(f"Unsupported MIME type: {target.mime}")
+                    raise ValueError(f"Unsupported MIME type: {target.default_mime}")
 
-    common_drivers[pd.DataFrame] = PdTransporter
+    common_serializers[pd.DataFrame] = PdTransporter
 except ImportError:
     pass
 
 # Polars
 
 
-class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
+class PlTransporter(Serializer[pl.DataFrame, DfFile]):
     """Transporter for Polars DataFrames."""
 
     @classmethod
@@ -387,7 +450,7 @@ class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
         return frozenset({"application/vnd.apache.parquet"})
 
     @classmethod
-    def estimate_bytes(
+    def estimate_serialized_size(
         cls,
         instance: pl.DataFrame,
         target: DfFile,
@@ -395,7 +458,7 @@ class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
         annotation: TypeNode[pl.DataFrame] | None = None,
     ) -> int:
         """Estimate the encoded size, sampling CSV output by row."""
-        if target.mime == "text/csv":
+        if target.default_mime == "text/csv":
             total = instance.height
             if total == 0:
                 return 0
@@ -406,29 +469,29 @@ class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
         return int(instance.estimated_size())
 
     @classmethod
-    def import_object(
-        cls: type[TransportDriver[V2, DfFile]],
+    def serialize(
+        cls: type[Serializer[V2, DfFile]],
         source: DfFile,
         realm: Any,
         annotation: TypeNode[V2] | None = None,
     ) -> V2:
         """Parse a Polars DataFrame from a CSV or Parquet file."""
         with source.open("r") as f:
-            if source.mime == "text/csv":
+            if source.default_mime == "text/csv":
                 res = pl.read_csv(f)
-            elif source.mime == "application/vnd.apache.parquet":
+            elif source.default_mime == "application/vnd.apache.parquet":
                 f = cast(BinaryIO, f)
                 res = pl.read_parquet(f)
-            elif source.mime == "application/vnd.ms-excel":
+            elif source.default_mime == "application/vnd.ms-excel":
                 f = cast(BinaryIO, f)
                 res = pl.read_excel(f)
             else:
-                raise ValueError(f"Unsupported MIME type: {source.mime}")
+                raise ValueError(f"Unsupported MIME type: {source.default_mime}")
 
         return check_type_and_cast(res, annotation)
 
     @classmethod
-    def export_object(
+    def serialize(
         cls,
         instance: pl.DataFrame,
         target: DfFile,
@@ -437,19 +500,19 @@ class PlTransporter(TransportDriver[pl.DataFrame, DfFile]):
     ) -> None:
         """Convert a Polars DataFrame to a CSV or Parquet file."""
         with target.open("w") as f:
-            if target.mime == "text/csv":
+            if target.default_mime == "text/csv":
                 instance.write_csv(f)
-            elif target.mime == "application/vnd.apache.parquet":
+            elif target.default_mime == "application/vnd.apache.parquet":
                 f = cast(BinaryIO, f)
                 instance.write_parquet(f)
-            elif target.mime == "application/vnd.ms-excel":
+            elif target.default_mime == "application/vnd.ms-excel":
                 f = cast(BinaryIO, f)
                 instance.write_excel(f)
             else:
-                raise ValueError(f"Unsupported MIME type: {target.mime}")
+                raise ValueError(f"Unsupported MIME type: {target.default_mime}")
 
 
-common_drivers[pl.DataFrame] = PlTransporter
+common_serializers[pl.DataFrame] = PlTransporter
 
 
 # NumPy arrays
@@ -475,7 +538,7 @@ try:
                 "Open and IPC scopes. Convert the array to a concrete dtype first."
             )
 
-    class NpTransporter(TransportDriver[np.ndarray, NpFile]):
+    class NpTransporter(Serializer[np.ndarray, NpFile]):
         """Transporter for NumPy arrays."""
 
         @classmethod
@@ -484,7 +547,7 @@ try:
             return frozenset({"application/x-npy", "application/x-npz"})
 
         @classmethod
-        def estimate_bytes(
+        def estimate_serialized_size(
             cls,
             instance: np.ndarray,
             target: NpFile,
@@ -492,39 +555,39 @@ try:
             annotation: TypeNode[np.ndarray] | None = None,
         ) -> int:
             """Estimate the encoded size from the array's memory footprint."""
-            if target.mime in {"application/x-npy", "application/x-npz"}:
+            if target.default_mime in {"application/x-npy", "application/x-npz"}:
                 _require_native_dtype(instance)
 
-            if target.mime == "application/x-npy":
+            if target.default_mime == "application/x-npy":
                 # The ``.npy`` format prepends a fixed 128-byte header.
                 return instance.nbytes + 128
 
             return instance.nbytes
 
         @classmethod
-        def import_object(
-            cls: type[TransportDriver[V2, NpFile]],
+        def serialize(
+            cls: type[Serializer[V2, NpFile]],
             source: NpFile,
             realm: Any,
             annotation: TypeNode[V2] | None = None,
         ) -> V2:
             """Parse a NumPy array from a file."""
             with source.open("r") as f:
-                if source.mime == "application/x-npy":
+                if source.default_mime == "application/x-npy":
                     f = cast(BinaryIO, f)
                     res = np.load(f, allow_pickle=False)
-                elif source.mime == "application/x-npz":
+                elif source.default_mime == "application/x-npz":
                     f = cast(BinaryIO, f)
                     res = np.load(f, allow_pickle=False)["arr_0"]
-                elif source.mime == "text/csv":
+                elif source.default_mime == "text/csv":
                     res = np.loadtxt(f, delimiter=",")
                 else:
-                    raise ValueError(f"Unsupported MIME type: {source.mime}")
+                    raise ValueError(f"Unsupported MIME type: {source.default_mime}")
 
             return check_type_and_cast(res, annotation)
 
         @classmethod
-        def export_object(
+        def serialize(
             cls,
             instance: np.ndarray,
             target: NpFile,
@@ -532,22 +595,22 @@ try:
             annotation: TypeNode[np.ndarray] | None = None,
         ) -> None:
             """Convert a NumPy array to a file."""
-            if target.mime in {"application/x-npy", "application/x-npz"}:
+            if target.default_mime in {"application/x-npy", "application/x-npz"}:
                 _require_native_dtype(instance)
 
             with target.open("w") as f:
-                if target.mime == "application/x-npy":
+                if target.default_mime == "application/x-npy":
                     f = cast(BinaryIO, f)
                     np.save(f, instance)
-                elif target.mime == "application/x-npz":
+                elif target.default_mime == "application/x-npz":
                     f = cast(BinaryIO, f)
                     np.savez(f, arr_0=instance)
-                elif target.mime == "text/csv":
+                elif target.default_mime == "text/csv":
                     np.savetxt(f, instance, delimiter=",")
                 else:
-                    raise ValueError(f"Unsupported MIME type: {target.mime}")
+                    raise ValueError(f"Unsupported MIME type: {target.default_mime}")
 
-    common_drivers[np.ndarray] = NpTransporter
+    common_serializers[np.ndarray] = NpTransporter
 except ImportError:
     pass
 
@@ -573,11 +636,11 @@ try:
             sqlparse.format(str(stmt), reindent=True, keyword_case="upper") for stmt in statements
         ]
 
-    class SQLTransporter(TransportDriver[sqla.Executable | Iterable[sqla.Executable], SQLFile]):
+    class SQLTransporter(Serializer[sqla.Executable | Iterable[sqla.Executable], SQLFile]):
         """Transporter for SQL statements."""
 
         @classmethod
-        def estimate_bytes(
+        def estimate_serialized_size(
             cls,
             instance: sqla.Executable | Iterable[sqla.Executable],
             target: SQLFile,
@@ -588,8 +651,8 @@ try:
             return _encoded_size(";\n\n".join(_format_statements(instance)))
 
         @classmethod
-        def import_object(
-            cls: type[TransportDriver[V2, SQLFile]],
+        def serialize(
+            cls: type[Serializer[V2, SQLFile]],
             source: SQLFile,
             realm: Any,
             annotation: TypeNode[V2] | None = None,
@@ -617,7 +680,7 @@ try:
             return check_type_and_cast(shaped, annotation)
 
         @classmethod
-        def export_object(
+        def serialize(
             cls,
             instance: sqla.Executable | Iterable[sqla.Executable],
             target: SQLFile,
@@ -632,7 +695,7 @@ try:
 
     # Registered for the concrete containers rather than ``Iterable``: the key is
     # matched by concrete type, and a bare ``Iterable`` would claim mappings too.
-    common_drivers[sqla.Executable | list[sqla.Executable] | tuple[sqla.Executable, ...]] = (
+    common_serializers[sqla.Executable | list[sqla.Executable] | tuple[sqla.Executable, ...]] = (
         SQLTransporter
     )
 except ImportError:
@@ -682,7 +745,7 @@ try:
 
         return None
 
-    class ImageTransporter(TransportDriver[Image.Image, ImageFile]):
+    class ImageTransporter(Serializer[Image.Image, ImageFile]):
         """Transporter for PIL Images."""
 
         @classmethod
@@ -691,7 +754,7 @@ try:
             return frozenset({"image/png", "image/tiff", "image/bmp"})
 
         @classmethod
-        def estimate_bytes(
+        def estimate_serialized_size(
             cls,
             instance: Image.Image,
             target: ImageFile,
@@ -707,8 +770,8 @@ try:
             return int(instance.width * instance.height * len(instance.getbands()) * bytes_per_band)
 
         @classmethod
-        def import_object(
-            cls: type[TransportDriver[V2, ImageFile]],
+        def serialize(
+            cls: type[Serializer[V2, ImageFile]],
             source: ImageFile,
             realm: Any,
             annotation: TypeNode[V2] | None = None,
@@ -721,7 +784,7 @@ try:
             return check_type_and_cast(img, annotation)
 
         @classmethod
-        def export_object(
+        def serialize(
             cls,
             instance: Image.Image,
             target: ImageFile,
@@ -732,14 +795,14 @@ try:
             # The encoder comes from the target format, never from the source
             # image: a JPEG loaded from disk must still be written as PNG when
             # the target is a PNG, or the payload contradicts the declared loss.
-            image_format = _image_format_for_mime(target.mime)
+            image_format = _image_format_for_mime(target.default_mime)
             if image_format is None:
-                raise ValueError(f"Unsupported image MIME type: {target.mime}")
+                raise ValueError(f"Unsupported image MIME type: {target.default_mime}")
 
             with target.open("w") as f:
                 instance.save(f, format=image_format)
 
-    common_drivers[Image.Image] = ImageTransporter
+    common_serializers[Image.Image] = ImageTransporter
 
 except ImportError:
     # PIL is not installed, so we won't register any converters for images
@@ -754,11 +817,11 @@ try:
 
     HTMLF = TypeVar("HTMLF", bound=HTMLFile, default=HTMLFile)
 
-    class HTMLTransporter(TransportDriver[BeautifulSoup, HTMLFile]):
+    class HTMLTransporter(Serializer[BeautifulSoup, HTMLFile]):
         """Transporter for BeautifulSoup HTML."""
 
         @classmethod
-        def estimate_bytes(
+        def estimate_serialized_size(
             cls,
             instance: BeautifulSoup,
             target: HTMLFile,
@@ -769,8 +832,8 @@ try:
             return _encoded_size(str(instance))
 
         @classmethod
-        def import_object(
-            cls: type[TransportDriver[V2, HTMLFile]],
+        def serialize(
+            cls: type[Serializer[V2, HTMLFile]],
             source: HTMLFile,
             realm: Any,
             annotation: TypeNode[V2] | None = None,
@@ -783,7 +846,7 @@ try:
             return check_type_and_cast(soup, annotation)
 
         @classmethod
-        def export_object(
+        def serialize(
             cls,
             instance: BeautifulSoup,
             target: HTMLFile,
@@ -794,7 +857,7 @@ try:
             with target.open("w") as f:
                 f.write(str(instance))
 
-    common_drivers[BeautifulSoup] = HTMLTransporter
+    common_serializers[BeautifulSoup] = HTMLTransporter
 
 except ImportError:
     # BeautifulSoup is not installed, so we won't register any converters for HTML
@@ -806,7 +869,7 @@ except ImportError:
 type PickleFile = File[Literal["application/pickle"], BinaryIO]
 
 
-class PickleTransporter(TransportDriver[Any, PickleFile]):
+class PickleTransporter(Serializer[Any, PickleFile]):
     """Transporter for Pickle files."""
 
     @classmethod
@@ -822,7 +885,7 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
     @classmethod
     def _require_supported_scope(cls) -> None:
         """Refuse payloads that must cross a process or network boundary."""
-        scope = current_ser_purpose.get()
+        scope = current_ser_ctx.get()
         if scope.matches(cls.__transport_scopes__()):
             return
 
@@ -832,7 +895,7 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
         )
 
     @classmethod
-    def estimate_bytes(
+    def estimate_serialized_size(
         cls,
         instance: Any,
         target: PickleFile,
@@ -843,8 +906,8 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
         return len(pickle.dumps(instance))
 
     @classmethod
-    def import_object(
-        cls: type[TransportDriver[V2, PickleFile]],
+    def serialize(
+        cls: type[Serializer[V2, PickleFile]],
         source: PickleFile,
         realm: Any,
         annotation: TypeNode[V2] | None = None,
@@ -861,7 +924,7 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
         return check_type_and_cast(obj, annotation)
 
     @classmethod
-    def export_object(
+    def serialize(
         cls,
         instance: Any,
         target: PickleFile,
@@ -875,4 +938,4 @@ class PickleTransporter(TransportDriver[Any, PickleFile]):
             pickle.dump(instance, f)
 
 
-common_drivers[object] = PickleTransporter
+common_serializers[object] = PickleTransporter

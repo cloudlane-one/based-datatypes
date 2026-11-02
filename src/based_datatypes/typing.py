@@ -37,6 +37,8 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 from typing_extensions import Sentinel, TypeForm
 
+from based_datatypes.data import copy_and_override
+
 from .descriptors import prop
 from .runtime import get_subclasses
 from .types import (
@@ -299,7 +301,7 @@ def _validate_attrs(obj: Any, anno: dict[str, TypeDef | TypeForm]) -> bool:
     return True
 
 
-@dataclass
+@dataclass(frozen=True)
 class TypeRef(Generic[T]):  # noqa: UP046
     """Reference to a typeform."""
 
@@ -618,12 +620,15 @@ class TypeRef(Generic[T]):  # noqa: UP046
         )
 
         # Make sure every arg-typeref can access all other arg-typerefs.
-        for s in local_typevar_map.values():
+        for k, s in local_typevar_map.items():
             if isinstance(s, TypeRef):
                 s = [s]
 
-            for t in s:
-                t.subs = local_typevar_map
+            s = tuple(
+                copy_and_override(type(t), t, subs={**t.subs, **local_typevar_map}) for t in s
+            )
+
+            local_typevar_map[k] = s[0] if len(s) == 1 else s
 
         return local_typevar_map
 
@@ -1087,6 +1092,55 @@ class TypeRef(Generic[T]):  # noqa: UP046
                 issubclass(t, tuple(super_typeref.typeset)) for t in self.typeset
             )
 
+    def is_supertype(self, subtype: TypeForm[T] | TypeDef[T]) -> TypeGuard[TypeForm[T]]:
+        """Check if this type reference is a supertype of the given type hint.
+
+        Args:
+            subtype: The subtype to check against.
+
+        Returns:
+            ``True`` if this reference is a supertype of ``subtype``.
+        """
+        sub_typeref = TypeRef(subtype)
+        try:
+            return is_subhint(
+                cast(Any, sub_typeref.resolved_type_def),
+                cast(Any, self.resolved_type_def),
+            )
+        except (BeartypeDoorNonpepException, TypeError):
+            # Fallback for hints beartype cannot compare: compare the concrete typesets.
+            return len(self.typeset) > 0 and all(
+                issubclass(t, tuple(self.typeset)) for t in sub_typeref.typeset
+            )
+
+
+def has_type[T](instance: Any, typedef: TypeForm[T] | TypeDef[T]) -> TypeGuard[T]:
+    """Check if an instance is of a given type hint.
+
+    Args:
+        instance: The instance to check.
+        typedef: The type hint to check against.
+
+    Returns:
+        ``True`` if the instance is of the given type hint, ``False`` otherwise.
+    """
+    return TypeRef.from_instance(instance).is_subtype(typedef)
+
+
+def is_subtype[T](
+    subtype: TypeForm[T] | TypeDef[T], supertype: TypeForm[T] | TypeDef[T]
+) -> TypeGuard[TypeForm[T]]:
+    """Check if a type hint is a subtype of another type hint.
+
+    Args:
+        subtype: The subtype to check.
+        supertype: The supertype to check against.
+
+    Returns:
+        ``True`` if ``subtype`` is a subtype of ``supertype``, ``False`` otherwise.
+    """
+    return TypeRef(subtype).is_subtype(supertype)
+
 
 def set_typeargs[T](  # noqa: C901
     typedef: TypeForm[T],
@@ -1146,32 +1200,13 @@ class TypeAwareClass:
     __origin__: type[TypeAwareClass]
     __args__: tuple[TypeForm, ...]
 
-    @prop(mode="class")
-    @classmethod
-    def type_params(
-        cls,
-    ) -> tuple[TypeVar | TypeVarTuple, ...]:
-        """Type arguments of this class."""
-        return cls.__dict__.get("__parameters__", ()) or cls.__dict__.get("__type_params__", ())
-
     @prop(cached=True, mode="class")
     @classmethod
-    def typevar_map(
+    def typeref(
         cls,
-    ) -> dict[
-        TypeVar | TypeVarTuple,
-        TypeRef | tuple[TypeRef, ...],
-    ]:
+    ) -> TypeRef[Self]:
         """Type variable map of this class."""
-        return TypeRef(cls).typevar_map
-
-    @prop(cached=True, mode="class")
-    @classmethod
-    def typeargs(
-        cls,
-    ) -> tuple[Any, ...]:
-        """Type arguments of this class."""
-        return TypeRef(cls).raw_args
+        return TypeRef(cls)
 
     @prop(mode="class", cached=True)
     @classmethod

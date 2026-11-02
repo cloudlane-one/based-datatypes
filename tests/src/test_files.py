@@ -16,6 +16,7 @@ from based_datatypes.files import (
     additional_mime_inv,
     ensure_dir_exists,
 )
+from based_datatypes.typing import TypeRef
 
 
 @pytest.fixture
@@ -46,11 +47,9 @@ def make_file(
     Returns:
         The file object.
     """
-    return LocalFile(
+    return LocalFile[mime, BinaryIO if binary else TextIO](
         dir=LocalDir(path=directory),
         name=name,
-        mime=mime,
-        io_type=BinaryIO if binary else TextIO,
         _suffix=suffix,
     )
 
@@ -126,7 +125,7 @@ class TestLocalFileFromPath:
         file = LocalFile.from_path(path)
 
         assert file.name == "note"
-        assert file.mime == "text/plain"
+        assert file.default_mime == "text/plain"
         assert file.io_type is TextIO
         assert file.extension == ".txt"
         assert file.path == path
@@ -163,7 +162,7 @@ class TestLocalFileFromPath:
 
         file = LocalFile.from_path(path)
 
-        assert file.mime == mime
+        assert file.default_mime == mime
         assert file.extension == extension
         assert file.path == path
 
@@ -177,7 +176,7 @@ class TestLocalFileFromPath:
         assert file.io_type is BinaryIO
         assert file.detected_format == "binary"
         assert file.extension == ".png"
-        assert file.mime == "image/png"
+        assert file.default_mime == "image/png"
 
     def test_no_suffix_keeps_name(self, workdir: Path) -> None:
         """A file without a suffix has no derived extension."""
@@ -193,7 +192,7 @@ class TestLocalFileFromPath:
         """A path that does not exist yet is still described."""
         file = LocalFile.from_path(workdir / "later.csv")
 
-        assert file.mime == "text/csv"
+        assert file.default_mime == "text/csv"
         assert file.io_type is TextIO
         assert file.path == workdir / "later.csv"
 
@@ -440,7 +439,7 @@ class TestMemoryFile:
 
     def test_text_defaults_to_empty(self) -> None:
         """A text file without content starts empty."""
-        file = MemoryFile(mime="text/plain", io_type=TextIO)
+        file = MemoryFile[Literal["text/plain"], TextIO]()
 
         assert file.content == ""
         assert file.detected_format == "text"
@@ -448,7 +447,7 @@ class TestMemoryFile:
 
     def test_binary_defaults_to_empty(self) -> None:
         """A binary file without content starts empty."""
-        file = MemoryFile(mime="application/octet-stream", io_type=BinaryIO)
+        file = MemoryFile[Literal["application/octet-stream"], BinaryIO]()
 
         assert file.content == b""
         assert file.detected_format == "binary"
@@ -457,20 +456,20 @@ class TestMemoryFile:
     def test_rejects_mismatched_content(self) -> None:
         """Content must match the declared IO type."""
         with pytest.raises(TypeError):
-            MemoryFile(mime="text/plain", io_type=TextIO, content=b"bytes")
+            MemoryFile[Literal["text/plain"], TextIO](content=b"bytes")
         with pytest.raises(TypeError):
-            MemoryFile(mime="application/octet-stream", io_type=BinaryIO, content="text")
+            MemoryFile[Literal["application/octet-stream"], BinaryIO](content="text")
 
     def test_text_read(self) -> None:
         """Existing text content is readable."""
-        file = MemoryFile(mime="text/plain", io_type=TextIO, content="hello")
+        file = MemoryFile[Literal["text/plain"], TextIO](content="hello")
 
         with cast(TextIO, file.open("r")) as stream:
             assert stream.read() == "hello"
 
     def test_text_write_updates_content(self) -> None:
         """Closing a writable stream stores the content."""
-        file = MemoryFile(mime="text/plain", io_type=TextIO)
+        file = MemoryFile[Literal["text/plain"], TextIO]()
 
         with cast(TextIO, file.open("w")) as stream:
             stream.write("written")
@@ -479,7 +478,7 @@ class TestMemoryFile:
 
     def test_binary_roundtrip(self) -> None:
         """Binary content is written and read back."""
-        file = MemoryFile(mime="application/octet-stream", io_type=BinaryIO)
+        file = MemoryFile[Literal["application/octet-stream"], BinaryIO]()
 
         with cast(BinaryIO, file.open("w")) as stream:
             stream.write(b"\x00\x01")
@@ -490,7 +489,7 @@ class TestMemoryFile:
 
     def test_read_write_mode(self) -> None:
         """``rw`` starts empty and supports seeking."""
-        file = MemoryFile(mime="text/plain", io_type=TextIO, content="old")
+        file = MemoryFile[Literal["text/plain"], TextIO](content="old")
 
         with cast(TextIO, file.open("rw")) as stream:
             stream.write("abc")
@@ -501,7 +500,7 @@ class TestMemoryFile:
 
     def test_read_mode_rejects_writes(self) -> None:
         """A read-only stream refuses writes and keeps the content."""
-        file = MemoryFile(mime="text/plain", io_type=TextIO, content="keep")
+        file = MemoryFile[Literal["text/plain"], TextIO](content="keep")
 
         with cast(TextIO, file.open("r")) as stream:
             assert not stream.writable()
@@ -512,7 +511,7 @@ class TestMemoryFile:
 
     def test_open_closes_stream(self) -> None:
         """The stream is closed when the context manager exits."""
-        file = MemoryFile(mime="text/plain", io_type=TextIO)
+        file = MemoryFile[Literal["text/plain"], TextIO]()
 
         with file.open("w") as stream:
             pass
@@ -521,11 +520,11 @@ class TestMemoryFile:
 
     def test_matches_file_hints(self) -> None:
         """A memory file matches hints like any other file."""
-        file = MemoryFile(mime="application/json", io_type=TextIO)
+        file = MemoryFile[Literal["application/json"], TextIO]()
 
-        assert file.match(File[Literal["application/json"], TextIO])
-        assert file.match(MemoryFile[Literal["application/json"]])
-        assert not file.match(LocalFile[Literal["application/json"]])
+        assert TypeRef(File[Literal["application/json"], TextIO]).validate(file)
+        assert TypeRef(MemoryFile[Literal["application/json"]]).validate(file)
+        assert not TypeRef(LocalFile[Literal["application/json"]]).validate(file)
 
 
 class TestAbstractBases:
@@ -534,7 +533,7 @@ class TestAbstractBases:
     def test_file_is_abstract(self, workdir: Path) -> None:
         """``File`` cannot be instantiated directly."""
         with pytest.raises(TypeError):
-            File(mime="text/plain", io_type=TextIO)  # pyright: ignore[reportAbstractUsage]
+            File[Literal["text/plain"], TextIO]()  # pyright: ignore[reportAbstractUsage]
 
     def test_dir_is_abstract(self, workdir: Path) -> None:
         """``Dir`` cannot be instantiated directly."""
@@ -542,12 +541,12 @@ class TestAbstractBases:
             Dir()  # pyright: ignore[reportAbstractUsage]
 
 
-class OtherFile(File[str, TextIO]):
+class OtherFile[M: str, I: TextIO](File[M, I]):
     """A different file implementation with the same format."""
 
-    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> TextIO:
+    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> I:
         """Return an in-memory stream."""
-        return io.StringIO()
+        return cast(I, io.StringIO())
 
 
 class TestFileMatch:
@@ -557,28 +556,28 @@ class TestFileMatch:
         """A hint matches when its MIME type and IO type agree."""
         file = make_file(workdir, "f", "application/json")
 
-        assert file.match(File[Literal["application/json"], TextIO])
-        assert file.match(File[Literal["application/json"]])
-        assert file.match(File[Literal["application/json", "application/yaml"], TextIO])
-        assert not file.match(File[Literal["application/pickle"], TextIO])
-        assert not file.match(File[Literal["application/json"], BinaryIO])
+        assert TypeRef(File[Literal["application/json"], TextIO]).validate(file)
+        assert TypeRef(File[Literal["application/json"]]).validate(file)
+        assert TypeRef(File[Literal["application/json", "application/yaml"], TextIO]).validate(file)
+        assert not TypeRef(File[Literal["application/pickle"], TextIO]).validate(file)
+        assert not TypeRef(File[Literal["application/json"], BinaryIO]).validate(file)
 
     def test_matches_a_bare_file_hint(self, workdir: Path) -> None:
         """A hint without format arguments accepts any file of that class."""
-        assert make_file(workdir, "f", "text/plain").match(File)
+        assert TypeRef(File).validate(make_file(workdir, "f", "text/plain"))
 
     def test_checks_the_declared_class(self, workdir: Path) -> None:
         """A hint for a concrete file class excludes other implementations."""
         file = make_file(workdir, "f", "application/json")
-        other = OtherFile(mime="application/json", io_type=TextIO)
+        other = OtherFile[Literal["application/json"], TextIO]()
 
-        assert file.match(LocalFile[Literal["application/json"]])
-        assert not other.match(LocalFile[Literal["application/json"]])
-        assert other.match(File[Literal["application/json"], TextIO])
+        assert TypeRef(LocalFile[Literal["application/json"]]).validate(file)
+        assert not TypeRef(LocalFile[Literal["application/json"]]).validate(other)
+        assert TypeRef(File[Literal["application/json"], TextIO]).validate(other)
 
     def test_rejects_non_file_hints(self, workdir: Path) -> None:
         """A hint that is not a file never matches."""
-        assert not make_file(workdir, "f", "text/plain").match(dict)
+        assert not TypeRef(dict).validate(make_file(workdir, "f", "text/plain"))
 
 
 class TestTextStreams:
