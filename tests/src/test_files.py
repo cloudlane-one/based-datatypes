@@ -632,7 +632,7 @@ class TestFileModesAndMatching:
 
         assert TypeRef(hint).origin is File
         assert TypeRef(File[Literal["application/json"], TextIO]).validate(file)
-        assert TypeRef.from_instance(file).is_subtype(hint)
+        assert TypeRef.from_instance(file).is_subtype_of(hint)
 
     def test_detected_format_of_a_missing_file(self, workdir: Path) -> None:
         """A file that is not on disk yet is described by its IO type."""

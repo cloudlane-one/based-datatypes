@@ -44,7 +44,9 @@ V = TypeVar("V")
 T = TypeVar("T", bound=Serialized)
 
 
-def check_type_and_cast[T](obj: Any, annotation: TypeDef[Any] | None = None) -> T:  # pyright: ignore[reportInvalidTypeVarUse]
+def check_type_and_cast[T](
+    obj: Any, annotation: TypeDef[Any] | None = None
+) -> T:  # pyright: ignore[reportInvalidTypeVarUse]
     """Check if the object matches the annotation type and cast it."""
     if annotation is not None and not TypeRef(annotation).validate(obj):
         raise TypeError(f"Object does not match expected type: {annotation}")
@@ -1325,7 +1327,6 @@ except ImportError:
 # BeautifulSoup HTML, if BeautifulSoup is installed
 try:
     from bs4 import BeautifulSoup
-
     from bs4.element import Tag
 
     type HTMLFile = File[Literal["text/html"], TextIO]

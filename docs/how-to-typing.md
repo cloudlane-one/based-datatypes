@@ -28,7 +28,7 @@ print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 | Name | Purpose |
 | --- | --- |
 | `TypeRef(hint, ...)` | Resolved reference to a hint: origin, arguments, parameters, union `members`, resolved type definition, type-variable map, validation. |
-| `TypeAwareClass` | Base class whose subclasses remember the arguments they were parameterised with. |
+| `Runtyped` | Base class whose subclasses remember the arguments they were parameterised with. |
 | `TypeRef(hint).typeset` | The set of concrete classes a hint can produce (`int \| None` → `{int, NoneType}`). |
 | `is_subtype(type_, supertype)` | Subtyping test over generic and special-form hints. |
 | `has_type(obj, type_)` | Runtime value check driven by a hint (beartype). |
@@ -125,15 +125,15 @@ print(TypeRef(int).validate("not an int"))
 
 ## Generic classes that know their arguments
 
-`TypeAwareClass` gives a class a runtime record of how it was parameterised. `Sub[int]` is a
+`Runtyped` gives a class a runtime record of how it was parameterised. `Sub[int]` is a
 real, cached subclass that stores `__origin__` and `__args__`, so the type arguments can be
 recovered later without rebuilding the generic machinery.
 
 ```python exec="on" session="typing"
-from based_datatypes.typing import TypeAwareClass, TypeRef
+from based_datatypes.typing import Runtyped, TypeRef
 
 
-class Repository[T](TypeAwareClass):
+class Repository[T](Runtyped):
     """Generic repository base."""
 
 
@@ -152,10 +152,10 @@ print("resolved:", sorted({ref.resolved_type_def.__name__ for ref in typevar_map
 a specialisation to the arguments it was applied with:
 
 ```python exec="on" session="typing"
-from based_datatypes.typing import TypeAwareClass, TypeRef
+from based_datatypes.typing import Runtyped, TypeRef
 
 
-class Cache[K, V](TypeAwareClass):
+class Cache[K, V](Runtyped):
     """Two-parameter generic."""
 
 
@@ -167,17 +167,17 @@ print(sorted({ref.resolved_type_def.__name__ for ref in TypeRef(Cache[str, int])
 ## Replacing type variables
 
 `set_typeargs` takes either a sequence (positional replacement) or a mapping from type
-variable to replacement. It works for builtin generics and for `TypeAwareClass` subclasses.
+variable to replacement. It works for builtin generics and for `Runtyped` subclasses.
 
 ```python exec="on" session="typing"
 from typing import TypeVar
 
-from based_datatypes.typing import TypeAwareClass, set_typeargs
+from based_datatypes.typing import Runtyped, set_typeargs
 
 T = TypeVar("T")
 
 
-class Box[T](TypeAwareClass):
+class Box[T](Runtyped):
     """Single-parameter generic."""
 
 

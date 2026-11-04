@@ -7,7 +7,6 @@ from decimal import Decimal
 from enum import auto
 from types import UnionType
 from typing import (
-    Annotated,
     Any,
     ClassVar,
     ForwardRef,
@@ -133,20 +132,23 @@ class LiteralGenericAlias[T](GenericAlias[T], Protocol):
         ...
 
 
-type TypeOrigin[T] = TypeAliasType | type[T]
+type TypeRoot[T] = TypeAliasType | type[T] | Sentinel
 """A named type object, which may be a concrete type or a type alias."""
 
-type TypeNode[T] = GenericAlias[T] | TypeOrigin[T]
-"""A raw type origin or a type origin with substituted type vars."""
+type TypeNode[T] = GenericAlias[T] | TypeRoot[T]
+"""A type root or a type root with substituted type vars."""
 
-type TypeDef[T] = TypeNode[T] | UnionType | Sentinel | LiteralGenericAlias | Annotated
-"""A type node, literal / sentinel types, annotated objects or a union thereof"""
+type TypeMember[T] = type[T] | GenericAlias[T] | LiteralGenericAlias
+"""A type node, literal, or a union thereof"""
 
-type TypeExpr[T] = TypeDef[T] | TypeVar
+type TypeDef[T] = TypeNode[T] | LiteralGenericAlias | UnionType
+"""A type node, literal, or a union thereof"""
+
+type TypeScalar[T] = TypeDef[T] | TypeVar
 """A type definition or a type variable."""
 
-type TypeTuple[T] = tuple[TypeExpr[T], ...] | TypeVarTuple
-"""A tuple of type expressions or a type variable tuple."""
+type TypeExpr[T] = TypeScalar[T] | TypeVar | TypeVarTuple
+"""A type scalar or a type var tuple."""
 
 
 @runtime_checkable

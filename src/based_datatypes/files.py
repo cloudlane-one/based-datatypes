@@ -29,7 +29,7 @@ from identify.identify import tags_from_filename, tags_from_path
 
 from based_datatypes.descriptors import prop
 from based_datatypes.types import TypeDef
-from based_datatypes.typing import TypeAwareClass, is_subtype
+from based_datatypes.typing import Runtyped, is_subtype
 
 
 def ensure_dir_exists(path: Path | str) -> Path:
@@ -95,7 +95,7 @@ R = TypeVar("R", bound=Read | Write, contravariant=True, default=Read | Write)
 
 
 @dataclass(kw_only=True)
-class File(ABC, TypeAwareClass, Generic[M, I, R]):
+class File(ABC, Runtyped, Generic[M, I, R]):
     """A generic, single file (may be within a file system or object storage)."""
 
     _suffix: str | None = None
@@ -104,24 +104,22 @@ class File(ABC, TypeAwareClass, Generic[M, I, R]):
     @prop(cached=True, mode="dual")
     def mimes(self) -> list[M]:
         """MIME types of the file."""
-        return cast(list[M], list(self.typeref.scalar_typevar_map[M].literal_values))
+        return cast(list[M], list(self._typeref.scalar_typevar_map[M].literal_values))
 
     @prop(cached=True, mode="dual")
     def io_type(self) -> TypeDef[I]:
         """The IO type of the file."""
-        typeref = self.typeref.scalar_typevar_map[I]
+        typeref = self._typeref.scalar_typevar_map[I]
         return cast(type[I], typeref.resolved_type_def)
 
     @prop(cached=True, mode="dual")
     def read_write(self) -> Literal["rw", "r", "w"]:
         """The read/write mode of the file."""
-        typeref = self.typeref.scalar_typevar_map[R]
+        typeref = self._typeref.scalar_typevar_map[R]
         return (
             "rw"
-            if typeref.is_supertype(Read | Write)
-            else "r"
-            if typeref.is_supertype(Read)
-            else "w"
+            if typeref.is_supertype_of(Read | Write)
+            else "r" if typeref.is_supertype_of(Read) else "w"
         )
 
     @property

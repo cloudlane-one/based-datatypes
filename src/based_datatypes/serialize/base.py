@@ -13,7 +13,7 @@ from typing import Any, Generic, Literal, Protocol, TypeVar, cast, runtime_check
 from based_datatypes.descriptors import prop
 from based_datatypes.files import File
 from based_datatypes.types import TypeDef
-from based_datatypes.typing import TypeAwareClass, TypeRef
+from based_datatypes.typing import Runtyped, TypeRef
 
 
 @dataclass(frozen=True)
@@ -135,7 +135,7 @@ class SerializationTarget(Generic[T, S, L]):
                 t
                 for t in targets
                 if (
-                    any((TypeRef(tg).is_subtype(t.type)) for tg in types)
+                    any((TypeRef(tg).is_subtype_of(t.type)) for tg in types)
                     if types is not None
                     else True
                 )
@@ -269,13 +269,13 @@ def target_mimes(hint: Any) -> tuple[str, ...]:
 
 
 @dataclass
-class Serializer(ABC, TypeAwareClass, Generic[V, T, S]):  # noqa: UP046
+class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
     """A class representing a serialization driver for a specific type."""
 
     @prop(cached=True, mode="class")
     def obj_type(self) -> TypeDef[V]:
         """Return the type of object this serializer handles."""
-        return self.typeref.scalar_typevar_map[V].resolved_type_def
+        return self._typeref.scalar_typevar_map[V].resolved_type_def
 
     __lossless_mimes__: frozenset[str] = frozenset()
     """MIME types this serializer round-trips exactly; empty marks every file format lossy."""
@@ -300,7 +300,7 @@ class Serializer(ABC, TypeAwareClass, Generic[V, T, S]):  # noqa: UP046
     @prop(cached=True, mode="class")
     def serialization_targets(self) -> list[SerializationTarget[T, S, Any]]:
         """Serialization targets supported by this serializer, as declared in its type arguments."""
-        typeref = self.typeref.scalar_typevar_map[T]
+        typeref = self._typeref.scalar_typevar_map[T]
         return cast(
             list[SerializationTarget[T, S, Any]],
             [
