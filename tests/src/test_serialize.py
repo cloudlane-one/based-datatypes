@@ -25,12 +25,13 @@ from pydantic import BaseModel
 from based_datatypes.files import File, LocalDir, LocalFile, MemoryFile
 from based_datatypes.serialize import (
     INDEX_FILENAME,
-    custom_serializers,
     Open,
     Realm,
     SerializationTarget,
     TransportScope,
+    _source_type,
     current_ser_ctx,
+    custom_serializers,
     deserialize,
     estimate_serialized_size,
     get_serializers,
@@ -40,7 +41,6 @@ from based_datatypes.serialize import (
     serialize,
     write_structure,
 )
-from based_datatypes.serialize import _source_type
 from based_datatypes.serialize import common as common_module
 from based_datatypes.serialize.base import (
     JSONDict,

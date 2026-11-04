@@ -14,7 +14,7 @@ def _get_calling_frame(offset: int = 0) -> inspect.FrameInfo:
     stack = inspect.stack()
     if len(stack) < offset + 3:
         raise RuntimeError("No caller!")
-    return stack[offset + 3]
+    return stack[offset + 2]
 
 
 def get_calling_module(offset: int = 0) -> ModuleType | None:

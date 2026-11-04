@@ -123,7 +123,7 @@ def _target_io(hint: Any) -> TypeDef[Any]:
     if hint is not None:
         ref = hint if isinstance(hint, TypeRef) else TypeRef(hint)
 
-        for var, value in ref.scalar_typevar_map.items():
+        for var, value in ref.typevar_map.items():
             if var.__name__ == "I":
                 return value.resolved_type_def
 

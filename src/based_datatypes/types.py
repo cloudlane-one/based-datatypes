@@ -7,6 +7,7 @@ from decimal import Decimal
 from enum import Enum, auto
 from types import UnionType
 from typing import (
+    Annotated,
     Any,
     ClassVar,
     ForwardRef,
@@ -146,7 +147,7 @@ type TypeNode[T] = GenericAlias[T] | TypeRoot[T]
 type TypeMember[T] = type[T] | GenericAlias[T] | LiteralGenericAlias
 """A type node, literal, or a union thereof"""
 
-type TypeDef[T] = TypeNode[T] | LiteralGenericAlias | UnionType
+type TypeDef[T] = TypeNode[T] | LiteralGenericAlias | UnionType | Annotated
 """A type node, literal, or a union thereof"""
 
 type TypeScalar[T] = TypeDef[T] | TypeVar

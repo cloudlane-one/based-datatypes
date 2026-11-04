@@ -1017,7 +1017,7 @@ def has_type[T](instance: Any, typedef: TypeForm[T] | TypeDef[T]) -> TypeGuard[T
 
 
 def is_subtype[T](
-    subtype: TypeForm[T] | TypeDef[T], supertype: TypeForm[T] | TypeDef[T]
+    subtype: TypeForm | TypeDef, supertype: TypeForm[T] | TypeDef[T]
 ) -> TypeGuard[TypeForm[T]]:
     """Check if a type hint is a subtype of another type hint.
 
@@ -1080,7 +1080,7 @@ class Runtyped:
     def __class_getitem__(cls, item: TypeForm | tuple[TypeForm, ...]) -> type[Self]:  # noqa: D105
         origin = cls.__origin__
 
-        module = get_calling_module()
+        module = get_calling_module(1)
         generic: (
             GenericAlias
         ) = super().__class_getitem__(  # pyright: ignore[reportAttributeAccessIssue]
@@ -1088,22 +1088,27 @@ class Runtyped:
         )
         typeref = TypeRef(generic, ctx_module=module)
 
-        if typeref.resolved_args in origin._generic_subclasses:
-            return cast(type[Self], origin._generic_subclasses[typeref.resolved_args])
+        full_args = tuple(
+            (Unpack[tuple[r.type, ...]] if isinstance(r, RepType) else r)
+            for r in typeref.scalar_args
+        )
+
+        if full_args in origin._generic_subclasses:
+            return cast(type[Self], origin._generic_subclasses[full_args])
 
         subclass = new_class(
-            f"{origin.__name__}[{', '.join(map(str, typeref.resolved_args))}]",
+            f"{origin.__name__}[{', '.join(map(str, full_args))}]",
             bases=(origin,),
             exec_body=lambda ns: ns.update(
                 {
                     "__origin__": origin,
                     "__orig_bases__": (generic,),
-                    "__args__": tuple(typeref.scalar_args),
+                    "__args__": tuple(full_args),
                     "__module__": module.__name__ if module is not None else None,
                     "_generic_subclasses": origin._generic_subclasses,
                     "_generic_alias": generic,
                 }
             ),
         )
-        origin._generic_subclasses[typeref.resolved_args] = subclass
+        origin._generic_subclasses[full_args] = subclass
         return subclass

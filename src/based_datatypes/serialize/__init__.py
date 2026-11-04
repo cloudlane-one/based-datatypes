@@ -11,7 +11,6 @@ from based_datatypes.typing import (
 )
 
 from .base import (
-    JSONValue,
     Open,
     Realm,
     Serializable,
@@ -53,7 +52,7 @@ __all__ = [
 custom_serializers: list[Serializer] = []
 
 
-def get_serializers[U, T: JSONValue | File, S: TransportScope](
+def get_serializers[U, T: Serialized, S: TransportScope](
     typ: TypeDef[U],
     targets: Collection[TypeDef[T]] | None = None,
     scope: S = Open(),
@@ -186,14 +185,17 @@ def deserialize[V2](
         return cast(
             V2,
             driver.__deserialize__(
-                source, scope=scope, realm=realm, annotation=cast(TypeDef[Serializable], annotation)
+                source,
+                scope=scope,
+                realm=realm,
+                annotation=cast(TypeDef[Serializable[Any, Any]], annotation),
             ),
         )
     else:
         return cast(V2, driver.deserialize(source, scope=scope, realm=realm, annotation=annotation))
 
 
-def serialize[T2: JSONValue | File](
+def serialize[T2: Serialized](
     instance: Any,
     target_type: TypeDef[T2] | None = None,
     lossless: bool = True,
@@ -241,7 +243,7 @@ def serialize[T2: JSONValue | File](
             T2,
             driver.__serialize__(
                 instance,
-                target_type=target_type,
+                target_type=target_type or Serialized,
                 lossless=lossless,
                 scope=scope,
                 realm=realm,
@@ -264,7 +266,7 @@ def serialize[T2: JSONValue | File](
         )
 
 
-def estimate_serialized_size[T2: JSONValue | File](
+def estimate_serialized_size[T2: Serialized](
     instance: Any,
     target_type: TypeDef[T2],
     lossless: bool = True,

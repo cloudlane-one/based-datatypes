@@ -122,7 +122,7 @@ class SerializationTarget(Generic[T, S, L]):
 
         Args:
             targets: The list of serialization targets to filter.
-            types: The collection of types or files to match against.
+            types: The collection of types to match against.
             scope: The scope to match.
             lossless: Whether to only include lossless targets.
 
@@ -135,7 +135,7 @@ class SerializationTarget(Generic[T, S, L]):
                 t
                 for t in targets
                 if (
-                    any((TypeRef(tg).is_subtype_of(t.type)) for tg in types)
+                    any((TypeRef(tt).is_subtype_of(t.type)) for tt in types)
                     if types is not None
                     else True
                 )
@@ -261,7 +261,7 @@ def target_mimes(hint: Any) -> tuple[str, ...]:
 
     ref = hint if isinstance(hint, TypeRef) else TypeRef(hint)
 
-    for var, value in ref.scalar_typevar_map.items():
+    for var, value in ref.typevar_map.items():
         if var.__name__ == "M":
             return cast(tuple[str, ...], value.literal_values)
 
@@ -275,7 +275,7 @@ class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
     @prop(cached=True, mode="class")
     def obj_type(self) -> TypeDef[V]:
         """Return the type of object this serializer handles."""
-        return self._typeref.scalar_typevar_map[V].resolved_type_def
+        return self._typeref.typevar_map[V].resolved_type_def
 
     __lossless_mimes__: frozenset[str] = frozenset()
     """MIME types this serializer round-trips exactly; empty marks every file format lossy."""
@@ -300,7 +300,7 @@ class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
     @prop(cached=True, mode="class")
     def serialization_targets(self) -> list[SerializationTarget[T, S, Any]]:
         """Serialization targets supported by this serializer, as declared in its type arguments."""
-        typeref = self._typeref.scalar_typevar_map[T]
+        typeref = self._typeref.typevar_map[T]
         return cast(
             list[SerializationTarget[T, S, Any]],
             [

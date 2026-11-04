@@ -104,18 +104,18 @@ class File(ABC, Runtyped, Generic[M, I, R]):
     @prop(cached=True, mode="dual")
     def mimes(self) -> list[M]:
         """MIME types of the file."""
-        return cast(list[M], list(self._typeref.scalar_typevar_map[M].literal_values))
+        return cast(list[M], list(self._typeref.typevar_map[M].literal_values))
 
     @prop(cached=True, mode="dual")
     def io_type(self) -> TypeDef[I]:
         """The IO type of the file."""
-        typeref = self._typeref.scalar_typevar_map[I]
+        typeref = self._typeref.typevar_map[I]
         return cast(type[I], typeref.resolved_type_def)
 
     @prop(cached=True, mode="dual")
     def read_write(self) -> Literal["rw", "r", "w"]:
         """The read/write mode of the file."""
-        typeref = self._typeref.scalar_typevar_map[R]
+        typeref = self._typeref.typevar_map[R]
         return (
             "rw"
             if typeref.is_supertype_of(Read | Write)

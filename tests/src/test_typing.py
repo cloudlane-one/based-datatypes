@@ -11,6 +11,7 @@ from typing import (
     ForwardRef,
     Generic,
     Literal,
+    ParamSpec,
     TypeVar,
     TypeVarTuple,
     Unpack,
@@ -41,6 +42,8 @@ type RecursiveLiteralAlias = Literal["a"] | list[RecursiveLiteralAlias]
 
 K = TypeVar("K")
 V = TypeVar("V")
+Ts = TypeVarTuple("Ts")  # pyright: ignore[reportGeneralTypeIssues]
+P = ParamSpec("P")
 
 
 def only_ref(value: TypeRef | tuple[TypeRef, ...]) -> TypeRef:
@@ -797,3 +800,194 @@ def test_runtyped_rejects_unrelated_origins() -> None:
         pass
 
     assert not is_subtype(Box[int], Other[int])
+
+
+def test_validate_reports_a_missing_attribute() -> None:
+    """An instance lacking an annotated attribute fails validation."""
+
+    @dataclasses.dataclass
+    class Record:
+        value: int
+
+    record = Record(1)
+    del record.value
+
+    assert not TypeRef(Record).validate(record)
+
+
+def test_validate_skips_unresolvable_attribute_hints() -> None:
+    """A hint that cannot be checked is skipped instead of failing."""
+
+    @dataclasses.dataclass
+    class Record:
+        value: Literal[object()]  # type: ignore[valid-type]
+
+    assert TypeRef(Record).validate(Record(1))
+
+
+def test_annotations_flatten_through_a_forward_ref() -> None:
+    """Nested ``Annotated`` metadata is flattened even behind a forward ref."""
+    hint = Annotated[ForwardRef("Annotated[int, 'inner']"), "outer"]
+
+    assert TypeRef(hint).annotations == ("inner", "outer")
+
+
+def test_scalar_args_unpacks_a_typevar_tuple() -> None:
+    """An ``Unpack`` of a type variable tuple contributes no scalar arguments."""
+    variadic = TypeVarTuple("Ts")  # pyright: ignore[reportGeneralTypeIssues]
+
+    assert TypeRef(
+        tuple[int, *variadic]  # pyright: ignore[reportGeneralTypeIssues]
+    ).scalar_args == (int,)
+
+
+def test_scalar_args_unpacks_a_fixed_tuple() -> None:
+    """An ``Unpack`` of a fixed tuple contributes each of its members."""
+    assert TypeRef(tuple[int, *tuple[str, int]]).scalar_args == (int, str, int)
+
+
+def test_concrete_type_of_a_union_is_none() -> None:
+    """A union has no single concrete type."""
+    assert TypeRef(int | str).concrete_type is None
+    assert TypeRef(typing.Union[int, str]).concrete_type is None  # noqa: UP007
+
+
+def test_typevar_map_of_a_literal_is_empty() -> None:
+    """A literal binds no type variables."""
+    assert TypeRef(Literal["a"]).typevar_map == {}
+
+
+def test_typevar_map_merges_union_members() -> None:
+    """The same type variable bound by several union members is unioned."""
+    mapping = TypeRef(Pair[int, str] | Pair[float, bytes]).typevar_map
+
+    assert {var.__name__ for var in mapping} == {"K", "V"}
+    resolved = {var.__name__: only_ref(ref).pure_type_def for var, ref in mapping.items()}
+    assert resolved == {"K": int | float, "V": str | bytes}
+
+
+def test_attr_typehints_uses_a_descriptor_return_type() -> None:
+    """A descriptor attribute is described by the return type of ``__get__``."""
+
+    class Meta(type):
+        def __get__(cls, obj: Any, objtype: Any = None) -> int:
+            return 1
+
+    class DescriptorType(metaclass=Meta):
+        pass
+
+    @dataclasses.dataclass
+    class Record:
+        value: DescriptorType
+
+    assert TypeRef(Record).attr_typehints == {"value": DescriptorType}
+
+
+def test_attr_typehints_skips_hints_without_a_concrete_type() -> None:
+    """A literal annotation has no concrete type and is kept as-is."""
+
+    @dataclasses.dataclass
+    class Record:
+        value: Literal["a"]
+
+    assert TypeRef(Record).attr_typehints == {"value": Literal["a"]}
+
+
+def test_has_type_checks_instances() -> None:
+    """``has_type`` validates a value against a hint."""
+    assert bt.has_type(1, int)
+    assert not bt.has_type("x", int)
+
+
+def test_param_map_handles_a_repeating_argument() -> None:
+    """A star-unpacked tuple argument is matched from the end of the parameters."""
+
+    class Generic2(Generic[K, V]):
+        pass
+
+    mapping = TypeRef(
+        Generic2[*tuple[int, ...], str]  # pyright: ignore[reportInvalidTypeForm]
+    ).param_map
+
+    assert mapping == {V: str}
+
+
+def test_param_map_handles_a_single_repeating_argument() -> None:
+    """A lone repeating argument binds the parameter to its element type."""
+
+    class Generic1(Generic[K]):
+        pass
+
+    assert TypeRef(
+        Generic1[*tuple[int, ...]]  # pyright: ignore[reportInvalidTypeForm]
+    ).param_map == {K: int}
+
+
+def test_param_map_handles_variadic_parameters() -> None:
+    """A type variable tuple consumes all remaining arguments."""
+
+    class Variadic(Generic[*Ts]):
+        pass
+
+    assert TypeRef(Variadic[int, str]).param_map == {Ts: int}
+
+
+def test_param_map_handles_variadic_parameters_with_a_repeating_argument() -> None:
+    """A repeating argument leaves the variadic parameter unbound."""
+
+    class Variadic(Generic[*Ts]):
+        pass
+
+    assert TypeRef(Variadic[*tuple[int, ...], str]).param_map == {}
+
+
+def test_forward_ref_falls_back_to_the_private_evaluator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the public helper the private evaluator is used."""
+    monkeypatch.setattr(bt, "_evaluate_forward_ref", None)
+
+    with pytest.warns(DeprecationWarning):
+        assert TypeRef(ForwardRef("int")).pure_type_def is int
+
+
+def test_from_instance_ignores_a_union_orig_class() -> None:
+    """A union ``__orig_class__`` has no exact node and falls back to the class."""
+
+    class GenericBox(Generic[T]):
+        pass
+
+    instance = GenericBox[int]()
+    instance.__orig_class__ = int | str  # type: ignore[assignment]
+
+    assert TypeRef.from_instance(instance).pure_type_def is GenericBox
+
+
+def test_attr_typehints_keeps_a_non_method_descriptor() -> None:
+    """A descriptor whose ``__get__`` is not a method keeps its own hint."""
+
+    @dataclasses.dataclass
+    class Record:
+        value: property
+
+    assert TypeRef(Record).attr_typehints == {"value": property}
+
+
+def test_param_map_skips_a_param_spec() -> None:
+    """A ``ParamSpec`` parameter is not bound to a type argument."""
+
+    class WithParamSpec(Generic[P, T]):
+        pass
+
+    assert TypeRef(WithParamSpec[[int], str]).param_map == {T: str}
+
+
+def test_param_map_handles_a_variadic_parameter_before_a_typevar() -> None:
+    """A repeating argument leaves the variadic parameter unbound but binds later ones."""
+
+    class Mixed(Generic[*Ts, T]):
+        pass
+
+    mapping = TypeRef(Mixed[*tuple[int, ...], str]).param_map
+
+    assert mapping == {T: str}
