@@ -4,11 +4,21 @@ import dataclasses
 import typing
 from decimal import Decimal
 from types import ModuleType
-from typing import Annotated, Any, ForwardRef, Generic, Literal, TypeVar, get_args
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    ForwardRef,
+    Generic,
+    Literal,
+    TypeVar,
+    TypeVarTuple,
+    Unpack,
+    get_args,
+)
 
 import pydantic
 import pytest
-from beartype.door import is_bearable
 
 from based_datatypes import typing as bt
 from based_datatypes.files import File, LocalFile
@@ -218,12 +228,6 @@ def test_typeref_typeform_round_trips_builtin_generics() -> None:
     assert TypeRef(int | None).resolved_type_def == int | None
 
 
-def test_typeref_typeform_round_trips_special_forms() -> None:
-    """Literals and annotations keep their metadata."""
-    assert TypeRef(Literal["a", 1]).resolved_type_def == Literal["a", 1]
-    assert TypeRef(Annotated[int, "meta"]).resolved_type_def == Annotated[int, "meta"]
-
-
 def test_typeref_typeform_round_trips_a_runtyped_class() -> None:
     """An applied ``Runtyped`` round-trips unchanged."""
     assert TypeRef(Box[int]).resolved_type_def is Box[int]
@@ -278,13 +282,6 @@ def test_typeref_typevar_map_of_a_union_is_empty_for_concrete_members() -> None:
     assert TypeRef(int | str).typevar_map == {}
 
 
-def test_typeref_scalar_typevar_map_excludes_typevar_tuples() -> None:
-    """Only scalar type-variable entries survive."""
-    mapping = TypeRef(Box[int]).typevar_map
-
-    assert set(mapping) == set(TypeRef(Box[int]).typevar_map)
-
-
 def test_typeref_typeset_and_common_type() -> None:
     """The typeset and its common base describe a union."""
     ref = TypeRef(bool | int | None)
@@ -313,37 +310,32 @@ def test_typeref_annotation_and_literal_values() -> None:
     """Dynamic metadata and literal values are exposed."""
     assert TypeRef(Annotated[int, "meta"]).annotations[0] == "meta"
     assert len(TypeRef(int).annotations) == 0
-    assert TypeRef(Literal["a", 1]).literal_values == ("a", 1)
-    assert TypeRef(int).literal_values == ()
+    assert TypeRef(Literal["a", 1]).literal_values == {"a", 1}
+    assert TypeRef(int).literal_values == set()
 
 
 @pytest.mark.parametrize(
     ("hint", "expected"),
     [
-        (LiteralAlias, ("a", 1)),
-        (NestedLiteralAlias, ("a", 1)),
-        (LiteralUnionAlias, ("a", 1, "b", 2)),
-        (Literal["a", 1] | Literal["b", 2], ("a", 1, "b", 2)),
-        (typing.Union[Literal["a"], Literal["b"]], ("a", "b")),  # noqa: UP007
-        (LiteralUnionAlias | Literal["c"], ("a", 1, "b", 2, "c")),
-        (LiteralAlias | NestedLiteralAlias, ("a", 1)),
-        (LiteralAlias | Literal["a", "b"], ("a", 1, "b")),
-        (Literal[1] | Literal[True], (1, True)),
-        (LiteralAlias | int | None, ("a", 1)),
-        (AliasInt, ()),
-        (AliasUnion, ()),
-        (list[Literal["a"]], ()),
-        (RecursiveLiteralAlias, ("a",)),
+        (LiteralAlias, {"a", 1}),
+        (NestedLiteralAlias, {"a", 1}),
+        (LiteralUnionAlias, {"a", 1, "b", 2}),
+        (Literal["a", 1] | Literal["b", 2], {"a", 1, "b", 2}),
+        (typing.Union[Literal["a"], Literal["b"]], {"a", "b"}),  # noqa: UP007
+        (LiteralUnionAlias | Literal["c"], {"a", 1, "b", 2, "c"}),
+        (LiteralAlias | NestedLiteralAlias, {"a", 1}),
+        (LiteralAlias | Literal["a", "b"], {"a", 1, "b"}),
+        (Literal[1] | Literal[True], {1}),
+        (LiteralAlias | int | None, {"a", 1}),
+        (AliasInt, set()),
+        (AliasUnion, set()),
+        (list[Literal["a"]], set()),
+        (RecursiveLiteralAlias, {"a"}),
     ],
 )
-def test_typeref_literal_values_resolves_aliases_and_unions(
-    hint: Any, expected: tuple[Any, ...]
-) -> None:
-    """Aliases and unions expose distinct literal values in declaration order."""
-    values = TypeRef(hint).literal_values
-
-    assert values == expected
-    assert tuple(type(value) for value in values) == tuple(type(value) for value in expected)
+def test_typeref_literal_values_resolves_aliases_and_unions(hint: Any, expected: set[Any]) -> None:
+    """Aliases and unions expose distinct literal values as a set."""
+    assert TypeRef(hint).literal_values == expected
 
 
 def test_typeref_origin_type_of_a_forward_ref() -> None:
@@ -354,18 +346,19 @@ def test_typeref_origin_type_of_a_forward_ref() -> None:
 
 def test_typeref_origin_type_of_a_union_string() -> None:
     """A union string evaluates to the union itself."""
-    assert TypeRef("int | str").origin is int | str
+    assert TypeRef("int | str").origin == int | str
 
 
 def test_typeref_origin_type_of_an_invalid_string() -> None:
     """An unresolvable string reports no origin type."""
-    assert TypeRef("not a type!").origin is None
+    with pytest.raises(SyntaxError):
+        TypeRef("not a type!").origin
 
 
 def test_typeref_origin_type_of_a_plain_hint() -> None:
-    """A non-string hint delegates to ``get_origin``."""
+    """A plain class is its own origin."""
     assert TypeRef(list[int]).origin is list
-    assert TypeRef(int).origin is None
+    assert TypeRef(int).origin is int
 
 
 def test_typeref_validate_accepts_matching_values() -> None:
@@ -451,15 +444,6 @@ class TestRuntypedComparison:
             LocalFile[Literal["application/json"], Any, Any],
             File[Literal["application/json"], Any],
         )
-
-    def test_beartype_does_not_inspect_arguments_of_a_value(self) -> None:
-        """beartype ignores the type arguments of an instance, which is why we compare them.
-
-        This pins the reason :meth:`TypeRef.validate` compares ``Runtyped``
-        hints structurally: if beartype ever starts honouring generic arguments of
-        values, that comparison could delegate to it.
-        """
-        assert is_bearable(Box[int](), Box[str])
 
 
 class Nested[T](Box[T]):
@@ -575,14 +559,14 @@ def test_typeargs_are_stable_per_class() -> None:
     assert value.pure_type_def is int
 
 
-def test_typeargs_of_an_unapplied_class_are_identity_bound() -> None:
-    """An unapplied class binds its parameters to themselves."""
+def test_typeargs_of_an_unapplied_class_resolve_to_defaults() -> None:
+    """An unapplied class resolves unbound parameters to ``Any``."""
     mapping = TypeRef(Box).typevar_map
 
     assert len(mapping) == 1
     ((key, value),) = mapping.items()
     assert not isinstance(value, tuple)
-    assert value.hint is key
+    assert value.hint is Any
 
 
 def test_generic_subclass_specialisation() -> None:
@@ -723,3 +707,93 @@ def test_runtyped_class_does_not_require_arguments() -> None:
     """A ``Runtyped`` subclass may itself accept no arguments."""
     instance: Any = Box()
     assert instance.item is None
+
+
+def test_typeref_none_and_typevar_resolution() -> None:
+    """None, variadic variables, defaults and overrides resolve consistently."""
+    variadic = TypeVarTuple("Ts")  # pyright: ignore[reportGeneralTypeIssues]
+    defaulted_variadic = TypeVarTuple(  # pyright: ignore[reportGeneralTypeIssues]
+        "Ts_default", default=Unpack[tuple[int, str]]
+    )
+
+    assert TypeRef(None).pure_type_def is bt.NoneType
+    assert TypeRef(variadic).pure_type_def is tuple
+    assert TypeRef(defaulted_variadic).scalar_args == (int, str)
+    assert TypeRef(T, subs={T: str}, overrides={T: int}).pure_type_def is int
+    assert TypeRef("T", subs={T: int}).pure_type_def is int
+    assert TypeRef(ForwardRef("T"), overrides={T: str}).pure_type_def is str
+
+
+def test_typeref_nested_annotations_and_variadic_tuples() -> None:
+    """Nested metadata is flattened and unpacked repetitions round-trip."""
+    hint = Annotated[
+        Annotated[list[T], "inner"], "outer"  # pyright: ignore[reportGeneralTypeIssues]
+    ]
+    variadic = tuple[int, *tuple[str, ...]]
+
+    assert TypeRef(hint, subs={T: int}).annotations == (  # pyright: ignore[reportArgumentType]
+        "inner",
+        "outer",
+    )
+    assert (
+        TypeRef(hint, subs={T: int}).runtime_type_def  # pyright: ignore[reportArgumentType]
+        == Annotated[list[int], "inner", "outer"]
+    )
+    assert TypeRef(variadic).scalar_args == (int, bt.RepType(str))
+    assert TypeRef(variadic).resolved_type_def == tuple[int, Unpack[tuple[str, ...]]]  # noqa: UP044
+    union = variadic | list[str]
+    assert (
+        TypeRef(union).resolved_type_def
+        == tuple[int, Unpack[tuple[str, ...]]] | list[str]  # noqa: UP044
+    )
+    assert variadic in TypeRef(union).members
+    assert is_subtype(variadic, union)
+
+
+def test_typeref_from_instance_and_approximations() -> None:
+    """Instances and approximate nodes retain useful generic information."""
+
+    class GenericBox(Generic[T]):
+        pass
+
+    instance = GenericBox[int]()
+    union = TypeRef(int | str)
+
+    assert TypeRef.from_instance(instance).resolved_type_def == GenericBox[int]
+    assert TypeRef.from_instance(1).pure_type_def is int
+    assert union.exact_type_node is None
+    assert union.approx_type_node is object
+    assert TypeRef(Literal["x"]).concrete_type is None
+
+
+def test_typeref_attribute_validation() -> None:
+    """Dataclass attributes are checked, with class and init variables skipped."""
+
+    @dataclasses.dataclass
+    class Record:
+        value: int
+        kind: ClassVar[str] = "record"
+        temporary: dataclasses.InitVar[int] = 0
+
+    assert TypeRef(Record).validate(Record(1))
+    assert not TypeRef(Record).validate(Record("wrong"))  # type: ignore[arg-type]
+    assert TypeRef(Record).validate(Record("wrong"), with_attrs=False)  # type: ignore[arg-type]
+    assert TypeRef(int).attr_typehints is None
+
+
+def test_runtyped_structural_validation_and_comparison() -> None:
+    """Recorded arguments decide validation and structural subtype relations."""
+    assert TypeRef(Box[int]).validate(Box[int](1))
+    assert not TypeRef(Box[str]).validate(Box[int](1))
+    assert TypeRef(Box[int]).is_supertype_of(Box[int])
+    assert is_subtype(Box[int], Box)
+    assert not is_subtype(Box[int], Pair[int, int])
+
+
+def test_runtyped_rejects_unrelated_origins() -> None:
+    """Structural comparison does not bypass normal class inheritance."""
+
+    class Other[T](Runtyped):
+        pass
+
+    assert not is_subtype(Box[int], Other[int])

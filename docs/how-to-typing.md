@@ -19,7 +19,7 @@ from based_datatypes.typing import TypeRef, has_type
 reference = TypeRef(list[int])
 
 print(reference.resolved_type_def)
-print(reference.origin, reference.raw_args)
+print(reference.origin, reference.args)
 print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 ```
 
@@ -34,10 +34,7 @@ print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 | `has_type(obj, type_)` | Runtime value check driven by a hint (beartype). |
 | `is_type_hint(obj)` | Whether an object describes a type rather than being a value of one. |
 | `get_lowest_common_base(types)` | Most derived shared base of several classes. |
-| `extract_nullable_type(hint)` | Non-`None` base of an optional hint. |
 | `get_inheritance_distance(cls, base)` | Signed number of steps between two classes. |
-| `set_typeargs(typedef, args)` | Replace type variables positionally or by name. |
-| `get_typeargs(instance)` | Type arguments recorded on a generic instance. |
 | `is_frozen_dataclass` / `is_immutable` | Dataclass and immutability predicates. |
 | `get_nondefault_methods` / `get_own_attrs` | Attribute introspection without inherited noise. |
 | `TypeDef` / `TypeNode` | The unions of hint expressions the helpers accept. |
@@ -97,8 +94,25 @@ print(TypeRef(Names).origin)
 print(TypeRef(Names).resolved_type_def is Names)
 
 reference = TypeRef(dict[str, int])
-print(reference.params, reference.raw_args)
-print("args:", [arg.type_def for arg in reference.arg_typerefs])
+print(reference.params, reference.args)
+print("scalar args:", reference.scalar_args)
+```
+
+Use `subs` to replace open type variables and `overrides` when a replacement must take
+precedence over existing substitutions and defaults. `pure_type_def` removes `Annotated`
+metadata, while `resolved_type_def` retains it and recursively resolves type arguments:
+
+```python exec="on" session="typing"
+from typing import Annotated, TypeVar
+
+from based_datatypes.typing import TypeRef
+
+T = TypeVar("T")
+reference = TypeRef(Annotated[list[T], "items"], subs={T: int})
+
+print(reference.pure_type_def)
+print(reference.resolved_type_def)
+print(reference.annotations)
 ```
 
 `validate` combines the runtime check with pydantic validation when the annotation carries
@@ -149,7 +163,8 @@ print("resolved:", sorted({ref.resolved_type_def.__name__ for ref in typevar_map
 ```
 
 `TypeRef` reports the parameters a declaration is generic over, and resolves the parameters of
-a specialisation to the arguments it was applied with:
+a specialisation to the arguments it was applied with. Unapplied parameters resolve to their
+defaults, bounds, or `Any`:
 
 ```python exec="on" session="typing"
 from based_datatypes.typing import Runtyped, TypeRef
@@ -160,19 +175,24 @@ class Cache[K, V](Runtyped):
 
 
 print(", ".join(param.__name__ for param in TypeRef(Cache).params))
-print(", ".join(param.__name__ for param in TypeRef(Cache[str, int]).params))
+print(TypeRef(Cache[str, int]).args)
 print(sorted({ref.resolved_type_def.__name__ for ref in TypeRef(Cache[str, int]).typevar_map.values()}))
 ```
 
+Validation and subtyping compare these recorded arguments structurally. Thus a `Box[int]`
+instance does not validate as `Box[str]`, even though a plain `isinstance` check cannot see
+the difference. Trailing arguments omitted from a supertype do not constrain the comparison.
+
 ## Replacing type variables
 
-`set_typeargs` takes either a sequence (positional replacement) or a mapping from type
-variable to replacement. It works for builtin generics and for `Runtyped` subclasses.
+Pass a mapping of type variables to hints as `subs`. The same substitution is applied
+through nested arguments and generic bases. `overrides` is available for the less common
+case where a replacement must supersede substitutions and parameter defaults.
 
 ```python exec="on" session="typing"
 from typing import TypeVar
 
-from based_datatypes.typing import Runtyped, set_typeargs
+from based_datatypes.typing import Runtyped, TypeRef
 
 T = TypeVar("T")
 
@@ -181,9 +201,9 @@ class Box[T](Runtyped):
     """Single-parameter generic."""
 
 
-print(set_typeargs(list[T], [int]))
-print(set_typeargs(Box[T], [str]))
-print(set_typeargs(Box[T], {T: float}))
+print(TypeRef(list[T], subs={T: int}).resolved_type_def)
+print(TypeRef(Box[T], subs={T: str}).resolved_type_def is Box[str])
+print(TypeRef(T, subs={T: str}, overrides={T: float}).resolved_type_def)
 ```
 
 ## Small predicates used by the package

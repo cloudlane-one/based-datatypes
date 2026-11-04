@@ -7,7 +7,6 @@ import operator
 import typing
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from dataclasses import InitVar, dataclass, field, is_dataclass
-from enum import Enum
 from functools import cached_property, reduce
 from inspect import getmodule, getmro, ismethod, signature
 from types import ModuleType, UnionType, new_class
@@ -41,6 +40,7 @@ from typing_extensions import Sentinel, TypeForm
 from .runtime import get_calling_module, get_subclasses
 from .types import (
     GenericAlias,
+    LiteralArg,
     RuntimeValidated,
     TypeDef,
     TypeExpr,
@@ -423,8 +423,6 @@ class TypeRef(Generic[T]):  # noqa: UP046
     def origin(self) -> Any:
         """Origin of the type hint."""
         if isinstance(self.hint, str | ForwardRef):
-            orig = None
-
             # Avoid evaluating the full typeform if supplied as str or ForwardRef.
             hint_str = self.hint.__forward_arg__ if isinstance(self.hint, ForwardRef) else self.hint
 
@@ -443,11 +441,8 @@ class TypeRef(Generic[T]):  # noqa: UP046
                             **self.ctx,
                         },
                     )
-                except Exception:
+                except:  # noqa: E722
                     pass
-
-            if orig is not None:
-                return orig
 
         orig = get_origin(self.type_def) or getattr(self.type_def, "__origin__", None)
 
@@ -525,12 +520,20 @@ class TypeRef(Generic[T]):  # noqa: UP046
         return getmodule(self.pure_type_def) or self.ctx_module
 
     @property
-    def type_args(self) -> tuple[TypeHint[T], ...]:
+    def pure_args(self) -> tuple[TypeHint | LiteralArg, ...]:
         """Type arguments of the type hint, with dynamic annotations removed."""
         return get_args(self.pure_type_def) or getattr(self.pure_type_def, "__args__", ())
 
+    @property
+    def type_args(self) -> tuple[TypeHint, ...]:
+        """Type arguments of the type hint, with dynamic annotations removed."""
+        if self.pure_origin is Literal:
+            return ()
+
+        return cast(tuple[TypeHint, ...], self.pure_args)
+
     @cached_property
-    def scalar_args(self) -> tuple[TypeScalar[T] | RepType[T], ...]:
+    def scalar_args(self) -> tuple[TypeScalar | RepType, ...]:
         """Type arguments of the type hint, recursively resolved to type scalars."""
         args = []
 
@@ -553,19 +556,13 @@ class TypeRef(Generic[T]):  # noqa: UP046
                 args.extend(tt_typeref.scalar_args)
                 continue
 
-            if is_subtype(arg_typeref.pure_origin, tuple) and hasattr(
-                arg_typeref.pure_type_def, "__unpacked__"
+            if is_subtype(arg_typeref.pure_origin, tuple) and getattr(
+                arg_typeref.pure_type_def, "__unpacked__", False
             ):
-                if len(arg_typeref.scalar_args) >= 2 and arg_typeref.scalar_args[-1] is Ellipsis:
-                    rep_type = arg_typeref.scalar_args[-2]
+                if len(arg_typeref.scalar_args) == 2 and arg_typeref.scalar_args[-1] is Ellipsis:
+                    rep_type = arg_typeref.scalar_args[0]
                     assert not isinstance(rep_type, RepType)
-
-                    args.append(
-                        arg_typeref.pure_origin[  # pyright: ignore[reportIndexIssue]
-                            *arg_typeref.scalar_args[:-2],
-                            RepType(rep_type),
-                        ]
-                    )
+                    args.append(RepType(rep_type))
                 else:
                     args.extend(arg_typeref.scalar_args)
 
@@ -594,8 +591,7 @@ class TypeRef(Generic[T]):  # noqa: UP046
         if self.pure_origin is Union or self.pure_origin is UnionType:
             return {
                 member
-                for arg in self.scalar_args
-                if not isinstance(arg, RepType)
+                for arg in self.type_args
                 for member in TypeRef(
                     arg,
                     ctx_module=self.module,
@@ -607,7 +603,7 @@ class TypeRef(Generic[T]):  # noqa: UP046
         return {cast(TypeMember, self.pure_type_def)}
 
     @cached_property
-    def literal_values(self) -> set[str | int | float | bool | Enum]:
+    def literal_values(self) -> set[LiteralArg]:
         """Distinct literal values, recursively resolving aliases and unions."""
         values = set()
 
@@ -619,13 +615,20 @@ class TypeRef(Generic[T]):  # noqa: UP046
         return values
 
     @cached_property
-    def resolved_type_def(self) -> TypeDef[T]:
-        """Resolved type definition with arguments recursively resolved."""
-        if is_bearable(self.pure_type_def, TypeRoot[T]):
-            return self.pure_type_def
-
-        if self.pure_origin is None or len(self.scalar_args) == 0 or self.pure_origin is Literal:
-            return self.pure_type_def
+    def resolved_args(self) -> tuple[TypeDef[T], ...]:
+        """Fully resolved type arguments."""
+        if (
+            (
+                is_bearable(self.pure_type_def, TypeRoot[T])
+                and not (
+                    isinstance(self.pure_type_def, type)
+                    and issubclass(self.pure_type_def, Runtyped)
+                )
+            )
+            or self.pure_origin is None
+            or len(self.scalar_args) == 0
+        ):
+            return ()
 
         resolved = [
             (
@@ -640,33 +643,44 @@ class TypeRef(Generic[T]):  # noqa: UP046
             for arg in self.scalar_args
         ]
 
-        if self.pure_origin is Union or self.pure_origin is UnionType:
-            return reduce(operator.or_, (r[0] for r in resolved))
+        return cast(
+            tuple[TypeDef[T], ...],
+            tuple((Unpack[tuple[r[0], ...]] if r[1] else r[0]) for r in resolved),
+        )
 
-        if isinstance(self.pure_origin, type):
-            if issubclass(self.pure_origin, Runtyped):
-                getitem_func = super(
-                    Runtyped, self.pure_origin
-                ).__class_getitem__  # pyright: ignore[reportAttributeAccessIssue]
-            else:
-                getitem_func = self.pure_origin.__class_getitem__
-        else:
-            getitem_func = self.pure_origin.__getitem__
+    @cached_property
+    def resolved_type_def(self) -> TypeDef[T]:
+        """Resolved type definition with arguments recursively resolved."""
+        if len(self.resolved_args) == 0:
+            return self.pure_type_def
+
+        if self.pure_origin is Union or self.pure_origin is UnionType:
+            return reduce(operator.or_, (r for r in self.resolved_args))
+
+        getitem_func = (
+            self.pure_origin.__class_getitem__
+            if isinstance(self.pure_origin, type)
+            else self.pure_origin.__getitem__
+        )
 
         return cast(
             TypeDef[T],
             (
                 getitem_func(
-                    Unpack[tuple[resolved[0][0]]]
-                    if resolved[0][1]
-                    else resolved[0][0]  # noqa: UP044
-                )
-                if len(resolved) == 1
-                else getitem_func(
-                    tuple((Unpack[tuple[r[0]]] if r[1] else r[0]) for r in resolved),  # noqa: UP044
+                    self.resolved_args[0] if len(self.resolved_args) == 1 else self.resolved_args
                 )
             ),
         )
+
+    @cached_property
+    def runtime_type_def(self) -> TypeDef[T]:
+        """Resolved type definition with arguments recursively resolved and annotations applied."""
+        typedef = self.resolved_type_def
+
+        if self.origin is Annotated:
+            typedef = cast(TypeDef[T], Annotated[typedef, *self.annotations])
+
+        return typedef
 
     @property
     def exact_type_node(self) -> TypeNode[T] | None:
@@ -754,7 +768,7 @@ class TypeRef(Generic[T]):  # noqa: UP046
         param_args: list[tuple[TypeVar | TypeVarTuple, TypeScalar]] = []
         params = TypeRef(self.pure_origin).params
 
-        if len(params) > 0 and len(self.scalar_args) > 0:
+        if len(params) > 0:
             # Initialize a list of remaining type params and args,
             # which are yet to be matched.
             remaining_params = list(params)
@@ -936,16 +950,16 @@ class TypeRef(Generic[T]):  # noqa: UP046
             ``True`` if the object is of this type, ``False`` otherwise.
         """
         if isinstance(obj, Runtyped):
-            return is_subtype(type(obj), self.resolved_type_def)
+            return is_subtype(type(obj), self.runtime_type_def)
 
-        if not is_bearable(obj, cast(Any, self.resolved_type_def)):
+        if not is_bearable(obj, cast(Any, self.runtime_type_def)):
             return False
 
-        if isinstance(self.resolved_type_def, RuntimeValidated) or any(
+        if isinstance(self.runtime_type_def, RuntimeValidated) or any(
             isinstance(a, RuntimeValidated | FieldInfo) for a in self.annotations
         ):
             try:
-                TypeAdapter(self.resolved_type_def).validate_python(obj)
+                TypeAdapter(self.runtime_type_def).validate_python(obj)
             except ValidationError:
                 return False
 
@@ -968,8 +982,8 @@ class TypeRef(Generic[T]):  # noqa: UP046
 
         try:
             return is_subhint(
-                cast(Any, self.resolved_type_def),
-                cast(Any, super_typeref.resolved_type_def),
+                cast(Any, self.runtime_type_def),
+                cast(Any, super_typeref.runtime_type_def),
             )
         except (BeartypeDoorNonpepException, BeartypeException, TypeError):
             # Fallback for hints beartype cannot compare: compare the concrete typesets.
@@ -986,7 +1000,7 @@ class TypeRef(Generic[T]):  # noqa: UP046
         Returns:
             ``True`` if this reference is a supertype of ``subtype``.
         """
-        return TypeRef(subtype).is_subtype_of(self.resolved_type_def)
+        return TypeRef(subtype).is_subtype_of(self.runtime_type_def)
 
 
 def has_type[T](instance: Any, typedef: TypeForm[T] | TypeDef[T]) -> TypeGuard[T]:
@@ -1030,6 +1044,7 @@ class Runtyped:
 
     _typeref: TypeRef[Self]
     _generic_subclasses: dict[tuple[Hashable, ...], type[Self]]
+    _generic_alias: GenericAlias | None
 
     def __init_subclass__(cls):  # noqa: D105
         if "__origin__" not in cls.__dict__:
@@ -1041,12 +1056,26 @@ class Runtyped:
         if "__type_params__" not in cls.__dict__ and Generic not in cls.__mro__:
             cls.__type_params__ = ()
 
+        orig_bases = []
+        for base in cls.__bases__:
+            if (
+                issubclass(base, Runtyped)
+                and base is not Runtyped
+                and base._generic_alias is not None
+            ):
+                orig_bases.append(base._generic_alias)
+
+        if len(orig_bases) > 0:
+            cls.__orig_bases__ = tuple(orig_bases)
+
         super().__init_subclass__()
 
         if "_typeref" not in cls.__dict__:
             cls._typeref = TypeRef(cls)
         if "_generic_subclasses" not in cls.__dict__:
             cls._generic_subclasses = {}
+        if "_generic_alias" not in cls.__dict__:
+            cls._generic_alias = None
 
     def __class_getitem__(cls, item: TypeForm | tuple[TypeForm, ...]) -> type[Self]:  # noqa: D105
         origin = cls.__origin__
@@ -1059,11 +1088,11 @@ class Runtyped:
         )
         typeref = TypeRef(generic, ctx_module=module)
 
-        if typeref.scalar_args in origin._generic_subclasses:
-            return cast(type[Self], origin._generic_subclasses[typeref.scalar_args])
+        if typeref.resolved_args in origin._generic_subclasses:
+            return cast(type[Self], origin._generic_subclasses[typeref.resolved_args])
 
         subclass = new_class(
-            str(typeref.resolved_type_def),
+            f"{origin.__name__}[{', '.join(map(str, typeref.resolved_args))}]",
             bases=(origin,),
             exec_body=lambda ns: ns.update(
                 {
@@ -1072,8 +1101,9 @@ class Runtyped:
                     "__args__": tuple(typeref.scalar_args),
                     "__module__": module.__name__ if module is not None else None,
                     "_generic_subclasses": origin._generic_subclasses,
+                    "_generic_alias": generic,
                 }
             ),
         )
-        origin._generic_subclasses[typeref.scalar_args] = subclass
+        origin._generic_subclasses[typeref.resolved_args] = subclass
         return subclass

@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from dataclasses import Field, dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from enum import auto
+from enum import Enum, auto
 from types import UnionType
 from typing import (
     Any,
@@ -116,6 +116,9 @@ class GenericAlias[T](Protocol):
     __args__: tuple[AnnotationScanType, ...]
     __origin__: type[T]
 
+    def __mro_entries__(self, bases: tuple[type, ...]) -> tuple[type, ...]:  # noqa: D105
+        ...
+
 
 @runtime_checkable
 class LiteralGenericAlias[T](GenericAlias[T], Protocol):
@@ -131,6 +134,8 @@ class LiteralGenericAlias[T](GenericAlias[T], Protocol):
     def __hash__(self):  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D105
         ...
 
+
+type LiteralArg = str | int | float | bool | Enum
 
 type TypeRoot[T] = TypeAliasType | type[T] | Sentinel
 """A named type object, which may be a concrete type or a type alias."""
