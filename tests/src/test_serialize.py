@@ -221,13 +221,11 @@ class TestScalarSerializers:
 class TestJSONSerializer:
     """Tests for the JSON and YAML serializer."""
 
-    def test_default_target_is_a_memory_file(self, payload: SerializedDict) -> None:
-        """Without a requested target the payload goes to an in-memory JSON file."""
+    def test_default_target_is_a_dictionary(self, payload: SerializedDict) -> None:
+        """Without a requested target the payload goes to a dictionary."""
         written = serialize(payload)
 
-        assert isinstance(written, MemoryFile)
-        assert written.default_mime == "application/json"
-        assert json.loads(cast(str, written.content)) == payload
+        assert isinstance(written, dict)
 
     def test_dict_target_returns_the_dictionary(self, payload: SerializedDict) -> None:
         """A dictionary target is satisfied by returning the dictionary."""
@@ -335,12 +333,12 @@ class TestXMLSerializer:
         assert isinstance(text, str)
         assert text.startswith("<root>")
 
-    def test_default_target_is_a_memory_file(self) -> None:
-        """Without a target the tree goes to an in-memory XML file."""
+    def test_default_target_is_a_string(self) -> None:
+        """Without a target the tree goes to a string."""
         written = serialize(self.tree())
 
-        assert isinstance(written, MemoryFile)
-        assert written.default_mime == "application/xml"
+        assert isinstance(written, str)
+        assert written.startswith("<root>")
 
     def test_roundtrip_keeps_comments(self, workdir: Path) -> None:
         """Comments survive the round trip through a file."""
@@ -826,12 +824,12 @@ class TestHTMLSerializer:
         """A text target returns the HTML text."""
         assert serialize(BeautifulSoup("<p>x</p>", "html.parser"), str) == "<p>x</p>"
 
-    def test_default_target_is_a_memory_file(self) -> None:
-        """Without a target the soup goes to an in-memory HTML file."""
+    def test_default_target_is_a_string(self) -> None:
+        """Without a target the soup goes to a string."""
         written = serialize(BeautifulSoup("<p>x</p>", "html.parser"))
 
-        assert isinstance(written, MemoryFile)
-        assert written.default_mime == "text/html"
+        assert isinstance(written, str)
+        assert written.startswith("<p>x</p>")
 
     def test_file_roundtrip(self, workdir: Path) -> None:
         """A soup round-trips through an HTML file."""

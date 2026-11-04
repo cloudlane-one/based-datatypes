@@ -52,12 +52,12 @@ __all__ = [
 custom_serializers: list[Serializer] = []
 
 
-def get_serializers[U, T: Serialized, S: TransportScope](
+def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
     typ: TypeDef[U],
     targets: Collection[TypeDef[T]] | None = None,
     scope: S = Open(),
-    lossless: bool = False,
-) -> list[tuple[int, type[T], Serializer[U, T, S] | type[Serializable[T, S]]]]:
+    lossless: L = False,
+) -> list[tuple[int, SerializationTarget[T, S, L], Serializer[U, T, S] | type[Serializable[T, S]]]]:
     """Get the serializers that can handle a given type or instance.
 
     Args:
@@ -226,44 +226,45 @@ def serialize[T2: Serialized](
         typ=annotation if annotation is not None else type(instance),
         targets=[target_type] if target_type is not None else None,
         scope=scope,
-        lossless=lossless if target_type is not None else False,
+        lossless=lossless,
     )
 
     if len(candidates) == 0:
         raise ValueError(
             f"No suitable serializer found for {type(instance).__name__} to "
-            f"{target_type!r} under scope {scope!r}"
-            + (f" with lossless={lossless}." if target_type is not None else ".")
+            f"{target_type!r} under scope {scope!r} "
+            f"with lossless={lossless}."
         )
 
-    _, _, driver = candidates[0]
+    _, target, driver = candidates[0]
 
-    if isinstance(driver, type) and issubclass(driver, Serializable):
-        return cast(
-            T2,
-            driver.__serialize__(
-                instance,
-                target_type=target_type or Serialized,
-                lossless=lossless,
-                scope=scope,
-                realm=realm,
-                file_factory=file_factory,
-                annotation=annotation,
-            ),
-        )
-    else:
-        return cast(
-            T2,
-            driver.serialize(
-                instance,
-                target_type=target_type,
-                lossless=lossless,
-                scope=scope,
-                realm=realm,
-                file_factory=file_factory,
-                annotation=annotation,
-            ),
-        )
+    with serialization_context(target=target, realm=realm):
+        if isinstance(driver, type) and issubclass(driver, Serializable):
+            return cast(
+                T2,
+                driver.__serialize__(
+                    instance,
+                    target_type=target.type,
+                    lossless=target.lossless,
+                    scope=target.scope,
+                    realm=realm,
+                    file_factory=file_factory,
+                    annotation=annotation,
+                ),
+            )
+        else:
+            return cast(
+                T2,
+                driver.serialize(
+                    instance,
+                    target_type=target.type,
+                    lossless=target.lossless,
+                    scope=target.scope,
+                    realm=realm,
+                    file_factory=file_factory,
+                    annotation=annotation,
+                ),
+            )
 
 
 def estimate_serialized_size[T2: Serialized](
@@ -271,9 +272,9 @@ def estimate_serialized_size[T2: Serialized](
     target_type: TypeDef[T2],
     lossless: bool = True,
     scope: TransportScope = Open(),
-    realm: Realm | None = None,
-    target: T2 | None = None,
     annotation: TypeDef[Serializable[T2]] | None = None,
+    realm: Realm | None = None,
+    file_factory: Callable[[], File] | None = None,
 ) -> int:
     """Estimate the byte size of serializing ``instance`` to ``target_type``.
 
@@ -286,16 +287,16 @@ def estimate_serialized_size[T2: Serialized](
         target_type: The target type or format to serialize to.
         lossless: Whether to require a lossless serialization.
         scope: The serialization scope to use for the serialization.
-        realm: The realm to serialize to.
-        target: An optional pre-allocated target object to serialize into.
         annotation: The declared type of the object, if any.
+        realm: The realm to serialize to.
+        file_factory: An optional factory function to create new files.
 
     Returns:
         The estimated number of bytes.
     """
     candidates = get_serializers(
         typ=annotation if annotation is not None else type(instance),
-        targets=[target_type],
+        targets=[target_type] if target_type is not None else None,
         scope=scope,
         lossless=lossless,
     )
@@ -303,28 +304,29 @@ def estimate_serialized_size[T2: Serialized](
     if len(candidates) == 0:
         raise ValueError(
             f"No suitable serializer found for {type(instance).__name__} to "
-            f"{target_type!r} under scope {scope!r}"
-            + (f" with lossless={lossless}." if target_type is not None else ".")
+            f"{target_type!r} under scope {scope!r} "
+            f"with lossless={lossless}."
         )
 
-    _, _, driver = candidates[0]
+    _, target, driver = candidates[0]
 
-    if isinstance(driver, type) and issubclass(driver, Serializable):
-        return driver.__estimate_serialized_size__(
-            instance,
-            target_type=target_type,
-            lossless=lossless,
-            scope=scope,
-            annotation=annotation,
-        )
-    else:
-        return driver.estimate_serialized_size(
-            instance,
-            target_type=target_type,
-            lossless=lossless,
-            scope=scope,
-            annotation=annotation,
-        )
+    with serialization_context(target=target, realm=realm):
+        if isinstance(driver, type) and issubclass(driver, Serializable):
+            return driver.__estimate_serialized_size__(
+                instance,
+                target_type=target.type,
+                lossless=target.lossless,
+                scope=target.scope,
+                annotation=annotation,
+            )
+        else:
+            return driver.estimate_serialized_size(
+                instance,
+                target_type=target.type,
+                lossless=target.lossless,
+                scope=target.scope,
+                annotation=annotation,
+            )
 
 
 def register_serializer(ser: Serializer) -> None:
