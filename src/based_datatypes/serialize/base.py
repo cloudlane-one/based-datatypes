@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Generic, Literal, Protocol, TypeVar, cast, runtime_checkable
 
 from based_datatypes.descriptors import prop
-from based_datatypes.files import File
+from based_datatypes.files import File, M
 from based_datatypes.types import TypeDef
 from based_datatypes.typing import Runtyped, TypeRef
 
@@ -262,8 +262,8 @@ def target_mimes(hint: Any) -> tuple[str, ...]:
     ref = hint if isinstance(hint, TypeRef) else TypeRef(hint)
 
     for var, value in ref.typevar_map.items():
-        if var.__name__ == "M":
-            return cast(tuple[str, ...], value.literal_values)
+        if var == M:
+            return cast(tuple[str, ...], tuple(value.literal_values))
 
     return ()
 

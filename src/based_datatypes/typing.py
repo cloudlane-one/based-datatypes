@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import operator
 import typing
-from collections.abc import Callable, Hashable, Iterable, Mapping
+from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
 from dataclasses import InitVar, dataclass, field, is_dataclass
 from functools import cached_property, reduce
 from inspect import getmodule, getmro, ismethod, signature
@@ -55,6 +55,73 @@ NoneType = type(None)
 
 # Public since Python 3.14; ``ForwardRef._evaluate`` is private and deprecated.
 _evaluate_forward_ref = getattr(typing, "evaluate_forward_ref", None)
+
+
+class OrderedSet[T](set[T]):
+    """A set that iterates in insertion order.
+
+    Membership, equality and hashing behave exactly as for :class:`set`, so an
+    ordered set compares equal to a plain set holding the same items. Only
+    iteration follows the order in which items were added, which type reflection
+    relies on: a union keeps its members in declaration order, and a serializer
+    declares its preferred format first.
+    """
+
+    __slots__ = ("_order",)
+
+    _order: dict[T, None]
+
+    def __init__(self, items: Iterable[T] = ()) -> None:
+        """Create an ordered set from the given items."""
+        super().__init__()
+        self._order = {}
+        self.update(items)
+
+    def add(self, item: T) -> None:
+        """Add an item, keeping its first insertion position."""
+        if item not in self:
+            super().add(item)
+            self._order[item] = None
+
+    def update(self, *others: Iterable[T]) -> None:
+        """Add the items of every given iterable."""
+        for other in others:
+            for item in other:
+                self.add(item)
+
+    def discard(self, item: T) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        """Remove an item if it is present."""
+        if item in self:
+            super().discard(item)
+            self._order.pop(item, None)
+
+    def remove(self, item: T) -> None:
+        """Remove an item, raising if it is absent."""
+        super().remove(item)
+        self._order.pop(item, None)
+
+    def pop(self) -> T:
+        """Remove and return the first item in insertion order."""
+        item = next(iter(self._order))
+        self.remove(item)
+        return item
+
+    def clear(self) -> None:
+        """Remove every item."""
+        super().clear()
+        self._order.clear()
+
+    def copy(self) -> OrderedSet[T]:
+        """Return a shallow copy that keeps the insertion order."""
+        return OrderedSet(self)
+
+    def __iter__(self) -> Iterator[T]:
+        """Iterate in insertion order."""
+        return iter(self._order)
+
+    def __repr__(self) -> str:
+        """Show the items in insertion order."""
+        return f"{type(self).__name__}({list(self)!r})"
 
 
 def is_frozen_dataclass(obj: Any) -> bool:
@@ -573,10 +640,12 @@ class TypeRef(Generic[T]):  # noqa: UP046
         return tuple(args)
 
     @cached_property
-    def members(self) -> set[TypeMember]:
+    def members(self) -> OrderedSet[TypeMember]:
         """Union members of the type hint, or the type itself if it is not a union.
 
-        Resolves all type aliases, which consist of unions, recursively.
+        Resolves all type aliases, which consist of unions, recursively. Members
+        keep their declaration order, which callers rely on to pick a preferred
+        format among several.
         """
         if isinstance(self.pure_type_def, TypeAliasType) or isinstance(
             self.pure_origin, TypeAliasType
@@ -589,28 +658,34 @@ class TypeRef(Generic[T]):  # noqa: UP046
             ).members
 
         if self.pure_origin is Union or self.pure_origin is UnionType:
-            return {
-                member
-                for arg in self.type_args
-                for member in TypeRef(
-                    arg,
-                    ctx_module=self.module,
-                    subs=self.subs,
-                    overrides=self.overrides,
-                ).members
-            }
+            members: OrderedSet[TypeMember] = OrderedSet()
 
-        return {cast(TypeMember, self.pure_type_def)}
+            for arg in self.type_args:
+                members.update(
+                    TypeRef(
+                        arg,
+                        ctx_module=self.module,
+                        subs=self.subs,
+                        overrides=self.overrides,
+                    ).members
+                )
+
+            return members
+
+        return OrderedSet([cast(TypeMember, self.pure_type_def)])
 
     @cached_property
-    def literal_values(self) -> set[LiteralArg]:
-        """Distinct literal values, recursively resolving aliases and unions."""
-        values = set()
+    def literal_values(self) -> OrderedSet[LiteralArg]:
+        """Distinct literal values, recursively resolving aliases and unions.
+
+        Values keep their declaration order, deduplicated by both type and value.
+        """
+        values: OrderedSet[LiteralArg] = OrderedSet()
 
         for member in self.members:
             typeref = TypeRef(member, ctx_module=self.module, overrides=self.overrides)
             if typeref.pure_origin is Literal:
-                values.update(member.__args__)
+                values.update(member.__args__)  # pyright: ignore[reportArgumentType]
 
         return values
 
@@ -763,7 +838,13 @@ class TypeRef(Generic[T]):  # noqa: UP046
         TypeVar | TypeVarTuple,
         TypeScalar,
     ]:
-        """Mapping of argument type variables to their values."""
+        """Mapping of argument type variables to their values.
+
+        Each matched argument is resolved through the current substitutions and
+        overrides, so the map is already fully substituted. Callers that ascend
+        into a base class pass this map on as their substitutions, which only
+        works when the values are resolved rather than the raw arguments.
+        """
         # First get the typevar params of the typehint.
         param_args: list[tuple[TypeVar | TypeVarTuple, TypeScalar]] = []
         params = TypeRef(self.pure_origin).params
@@ -813,7 +894,10 @@ class TypeRef(Generic[T]):  # noqa: UP046
 
                 if isinstance(p, TypeVar | TypeVarTuple):
                     # In case of a normal typevar, map the next arg.
-                    param_args.insert(param_arg_pointer, (p, next_arg))
+                    param_args.insert(
+                        param_arg_pointer,
+                        (p, next_arg),
+                    )
 
                 if isinstance(p, TypeVarTuple):
                     # In case of a typevar-tuple, map all remaining args
@@ -828,12 +912,12 @@ class TypeRef(Generic[T]):  # noqa: UP046
                             next_arg = next_arg.type
                         else:
                             remaining_args.pop(next_item)
-                        param_args.insert(param_arg_pointer, (p, next_arg))
+                        param_args.insert(
+                            param_arg_pointer,
+                            (p, next_arg),
+                        )
 
-        param_map: dict[TypeVar | TypeVarTuple, TypeScalar] = {}
-        param_map.update({k: v for k, v in param_args})
-
-        return param_map
+        return {k: v for k, v in param_args} | dict(self.subs) | dict(self.overrides)
 
     @cached_property
     def typevar_map(
@@ -847,15 +931,14 @@ class TypeRef(Generic[T]):  # noqa: UP046
             TypeVar | TypeVarTuple,
             TypeRef,
         ] = {
-            k: TypeRef(v, ctx_module=self.module, subs=self.subs, overrides=self.overrides)
+            k: TypeRef(v, ctx_module=self.module, subs=self.param_map, overrides=self.overrides)
             for k, v in self.param_map.items()
         }
 
         if self.pure_origin is Union or self.pure_origin is UnionType:
             # Resolve each union member individually and union the values bound
             # to the same type variable.
-            for arg in self.scalar_args:
-                assert not isinstance(arg, RepType), "Repeating types are not allowed in unions"
+            for arg in self.type_args:
                 for var, value in TypeRef(
                     arg,
                     ctx_module=self.module,
