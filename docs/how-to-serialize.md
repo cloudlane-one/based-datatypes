@@ -30,10 +30,10 @@ from based_datatypes.serialize import deserialize, serialize
 workdir = Path(tempfile.mkdtemp())
 payload = {"hello": "world", "items": [1, 2]}
 
-# Without a target the serializer picks its preferred format: an in-memory file.
+# Without a target the serializer picks the first format it declares: for a
+# JSON-shaped dictionary that is the value itself, since it needs no encoding.
 written = serialize(payload)
-print(type(written).__name__, written.default_mime)
-print(written.content)
+print(type(written).__name__, written == payload)
 
 # A file target is created by a factory, so the caller decides where it lands.
 json_target = LocalFile[Literal["application/json"], TextIO](
@@ -191,6 +191,30 @@ print(drivers([parquet_target], lossless=True))
 Reading is not restricted this way: losslessness describes what an export can drop, so
 `deserialize` reads lossy formats as readily as lossless ones.
 
+A target that is not a file has no MIME type to declare, so a serializer states that case
+separately with `__lossless_values__`; SQL and HTML declare `False`, because their text target is
+the same lossy re-rendering as their file. Without a requested target the filter is not applied at
+all — `serialize(obj)` takes the first format the serializer declares.
+
+## Declaring a scope
+
+The third type argument of `Serializer[V, T, S]` declares the scope a serializer serves.
+Selection compares that class with the requested scope: a declaration for a narrower scope (say
+`LAN`) also serves a request for a broader one (`IPC`), and `Open` is the unrestricted end on both
+sides — an `Open` request accepts every declaration, and an `Open` declaration serves every
+request. A serializer that leaves `S` out declares `Open`, which is why the built-in drivers are
+usable everywhere.
+
+```python exec="on" session="serialize"
+from based_datatypes.serialize import Open, get_serializers
+
+print(get_serializers(dt.datetime, [str], Open(), lossless=False) != [])
+```
+
+The declaration is a class, not a value: a scope carries data (a process id, a subnet), and only
+the caller knows it, so the value is supplied at call time while the class is what selection
+compares.
+
 ## Estimating the export size
 
 `estimate_serialized_size(obj, target_type)` reports how many bytes the serialization would
@@ -257,6 +281,13 @@ print(restored["image"].path.name)
 ```
 
 Files read back as `LocalFile` handles, so they can be passed straight to `deserialize`.
+
+A key must be one path component and must not be `__index__`: the key decides a file name, so a
+key such as `../outside` or an absolute path would write outside the tree, and `__index__` would
+take the name of the index. Both raise `ValueError` before anything is created. Replacing a key
+with a value of another shape (a file over a sub-directory, a primitive over a file) removes the
+old artifact instead of leaving it to shadow the new value; keys the new structure does not
+mention are left in place.
 
 ## Writing a serializer for your own type
 
@@ -337,7 +368,8 @@ print(deserialize("1.5,2.5", Point))
 
 `CommonSerializer` supplies the target handling: `_resolve_target` turns a target type or a
 `file_factory` into the file to write to, and returns `None` when the target is a plain value;
-`__lossless_mimes__` declares which of the declared MIME types round-trip exactly.
+`__lossless_mimes__` declares which of the declared MIME types round-trip exactly, and
+`__lossless_values__` whether the plain-value target does.
 
 ## The `Serializable` protocol
 
@@ -435,5 +467,7 @@ print(estimate_serialized_size(Document("hello"), File[Literal["text/plain"], Te
   them would require `allow_pickle=True`; convert the array to a concrete dtype first.
 - **Losslessness is per format, not per serializer.** Asking for `lossless=True` with a CSV
   target has no candidate even though the same serializer writes lossless parquet.
+- **A plain-value target can be lossy too.** SQL and HTML re-render the object, so
+  `serialize(soup, str)` needs `lossless=False` exactly like the `.html` file does.
 - **A missing pair raises `ValueError`.** `serialize` and `deserialize` name the object type, the
   target and the active scope in the message.

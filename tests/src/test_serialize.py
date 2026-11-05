@@ -46,6 +46,7 @@ from based_datatypes.serialize.base import (
     JSONDict,
     SerializedDict,
     SerializedValue,
+    Serializer,
     target_mimes,
 )
 from based_datatypes.serialize.common import (
@@ -679,9 +680,14 @@ class TestSQLSerializer:
 
     def test_text_target(self) -> None:
         """A text target returns the formatted statements."""
-        text = serialize(self.statement(), str)
+        text = serialize(self.statement(), str, lossless=False)
 
         assert "SELECT" in cast(str, text)
+
+    def test_text_target_is_lossy(self) -> None:
+        """The text target is as lossy as the SQL file of the same content."""
+        with pytest.raises(ValueError, match="No suitable serializer"):
+            serialize(self.statement(), str)
 
     def test_file_roundtrip(self, workdir: Path) -> None:
         """Statements round-trip through an SQL file."""
@@ -717,7 +723,7 @@ class TestSQLSerializer:
 
     def test_estimate_measures_the_text(self) -> None:
         """The estimate is the encoded statement text."""
-        assert estimate_serialized_size(self.statement(), str) > 0
+        assert estimate_serialized_size(self.statement(), str, lossless=False) > 0
 
     def test_estimate_formats_only_a_sample(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Only a handful of statements are formatted, however many there are."""
@@ -822,7 +828,14 @@ class TestHTMLSerializer:
 
     def test_text_target(self) -> None:
         """A text target returns the HTML text."""
-        assert serialize(BeautifulSoup("<p>x</p>", "html.parser"), str) == "<p>x</p>"
+        assert (
+            serialize(BeautifulSoup("<p>x</p>", "html.parser"), str, lossless=False) == "<p>x</p>"
+        )
+
+    def test_text_target_is_lossy(self) -> None:
+        """The text target is as lossy as the HTML file of the same content."""
+        with pytest.raises(ValueError, match="No suitable serializer"):
+            serialize(BeautifulSoup("<p>x</p>", "html.parser"), str)
 
     def test_default_target_is_a_string(self) -> None:
         """Without a target the soup goes to a string."""
@@ -844,7 +857,7 @@ class TestHTMLSerializer:
         """The estimate is the encoded soup size."""
         soup = BeautifulSoup("<p>x</p>", "html.parser")
 
-        assert estimate_serialized_size(soup, str) == len(str(soup).encode())
+        assert estimate_serialized_size(soup, str, lossless=False) == len(str(soup).encode())
 
     def test_estimate_is_a_rough_upper_bound(self) -> None:
         """Walking the tags is cheaper than serializing them and slightly over-counts."""
@@ -855,7 +868,7 @@ class TestHTMLSerializer:
             "html.parser",
         )
 
-        estimate = estimate_serialized_size(soup, str)
+        estimate = estimate_serialized_size(soup, str, lossless=False)
         real = len(str(soup).encode())
 
         assert real <= estimate <= 1.3 * real
@@ -870,7 +883,7 @@ class TestHTMLSerializer:
 
         monkeypatch.setattr(BeautifulSoup, "__str__", exploding)
 
-        assert estimate_serialized_size(soup, str) > 0
+        assert estimate_serialized_size(soup, str, lossless=False) > 0
 
 
 # Pickle
@@ -924,6 +937,28 @@ class TestSelection:
     def test_scope_is_respected(self) -> None:
         """A serializer is only selected for a scope it declares."""
         assert get_serializers(dict, [File[Literal["application/json"], TextIO]], Open()) != []
+
+    def test_a_scoped_serializer_is_selected_for_its_scope(self) -> None:
+        """The scope class of the ``S`` type argument gates selection."""
+        assert ScopedSerializer.scopes == (PrivateScope,)
+        assert select_scoped(PrivateScope()) != []
+
+    def test_a_scoped_serializer_is_not_selected_for_another_scope(self) -> None:
+        """A request outside the declared scope hierarchy finds no candidate."""
+        assert select_scoped(ForeignScope()) == []
+
+    def test_an_open_request_accepts_every_declaration(self) -> None:
+        """An unrestricted request imposes no scope restriction."""
+        assert select_scoped(Open()) != []
+
+    def test_generated_targets_keep_the_declared_order(self) -> None:
+        """The union order of the declared formats survives reflection."""
+        mimes = [
+            target_mimes(target.type)
+            for target in common_module.PdSerializer().serialization_targets
+        ]
+
+        assert mimes[0] == ("application/vnd.apache.parquet",)
 
     def test_serializable_protocol_wins_over_common_serializers(self) -> None:
         """A type that serializes itself is preferred over a registered serializer."""
@@ -1186,6 +1221,127 @@ class TestLocalFS:
 
         assert _extension(file) == ".txt"
         assert _extension(MemoryFile[Literal["text/plain"], TextIO](_suffix="")) == ""
+
+    def test_replacing_a_container_with_a_primitive_drops_the_tree(self, tmp_path: Path) -> None:
+        """A primitive written over a container is not overlaid by the old tree."""
+        write_structure({"a": {"x": 1}}, tmp_path / "out")
+
+        write_structure({"a": 2}, tmp_path / "out")
+
+        assert read_structure(tmp_path / "out") == {"a": 2}
+        assert not (tmp_path / "out" / "a").exists()
+
+    def test_replacing_a_primitive_with_a_file_drops_the_index_value(self, tmp_path: Path) -> None:
+        """A file written over a primitive is returned, not the old primitive."""
+        write_structure({"a": 1}, tmp_path / "out")
+
+        write_structure(
+            {"a": MemoryFile[Literal["text/plain"], TextIO](content="body")}, tmp_path / "out"
+        )
+
+        restored = read_structure(tmp_path / "out")
+
+        assert cast(LocalFile[Any], restored["a"]).path.read_text(encoding="utf-8") == "body"
+
+    def test_replacing_a_file_with_a_primitive_drops_the_file(self, tmp_path: Path) -> None:
+        """The file a replaced key left behind does not shadow the new value."""
+        write_structure(
+            {"a": MemoryFile[Literal["text/plain"], TextIO](content="body")}, tmp_path / "out"
+        )
+
+        write_structure({"a": "text"}, tmp_path / "out")
+
+        assert read_structure(tmp_path / "out") == {"a": "text"}
+
+    def test_a_shorter_list_ignores_retained_entries(self, tmp_path: Path) -> None:
+        """Entries a shorter rewrite leaves behind are not part of the list."""
+        file = MemoryFile[Literal["text/plain"], TextIO](content="body")
+        write_structure({"items": [file, "second"]}, tmp_path / "out")
+
+        write_structure({"items": ["first"]}, tmp_path / "out")
+
+        assert read_structure(tmp_path / "out") == {"items": ["first"]}
+
+    def test_a_shorter_sequenced_list_reads_the_new_values(self, tmp_path: Path) -> None:
+        """A retained file at a reused position does not replace the new value."""
+        file = MemoryFile[Literal["text/plain"], TextIO](content="body")
+        write_structure({"items": [file, "second"]}, tmp_path / "out")
+
+        write_structure({"items": [1, 2]}, tmp_path / "out")
+
+        assert read_structure(tmp_path / "out") == {"items": [1, 2]}
+
+    def test_directory_names_keep_their_dots(self, tmp_path: Path) -> None:
+        """A dotted key reads back as the whole key, not its first component."""
+        write_structure({"release.v1": {"x": 1}}, tmp_path / "out")
+
+        assert read_structure(tmp_path / "out") == {"release.v1": {"x": 1}}
+
+    def test_the_index_name_is_reserved(self, tmp_path: Path) -> None:
+        """A key that would take the index name is refused."""
+        file = MemoryFile[Literal["application/yaml"], TextIO](content="mine")
+
+        with pytest.raises(ValueError, match="not a valid entry name"):
+            write_structure({"__index__": file}, tmp_path / "out")
+
+    @pytest.mark.parametrize("key", ["../outside", "/etc/passwd", "a/b", "a\\b", ".", "..", ""])
+    def test_keys_must_be_one_path_component(self, key: str, tmp_path: Path) -> None:
+        """A key that would write outside the tree is refused."""
+        with pytest.raises(ValueError, match="not a valid entry name"):
+            write_structure({key: "value"}, tmp_path / "out")
+
+
+class PrivateScope(Open):
+    """A narrower scope than the unrestricted one."""
+
+
+class ForeignScope(TransportScope):
+    """A scope a :class:`ScopedSerializer` does not declare."""
+
+
+class ScopedSerializer(Serializer[float, str, PrivateScope]):
+    """A serializer that only serves the private scope."""
+
+    def serialize(
+        self,
+        instance: float,
+        target_type: Any = None,
+        lossless: bool = True,
+        scope: TransportScope = Open(),
+        annotation: Any = None,
+        realm: Realm | None = None,
+        file_factory: Any = None,
+    ) -> str:
+        """Return the number as text."""
+        return repr(instance)
+
+    def deserialize(
+        self,
+        source: str,
+        scope: TransportScope = Open(),
+        realm: Realm | None = None,
+        annotation: Any = None,
+    ) -> float:
+        """Read the number back."""
+        return float(source)
+
+
+def select_scoped(scope: TransportScope) -> list[Any]:
+    """Select a ``float`` serializer for ``str`` under ``scope`` with the scoped driver registered.
+
+    Args:
+        scope: The scope to select for.
+
+    Returns:
+        The candidates found.
+    """
+    driver = ScopedSerializer()
+    register_serializer(driver)
+
+    try:
+        return get_serializers(float, [str], scope, False)
+    finally:
+        custom_serializers.remove(driver)
 
 
 class Document:

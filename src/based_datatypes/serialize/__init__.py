@@ -49,7 +49,7 @@ __all__ = [
     "write_structure",
 ]
 
-custom_serializers: list[Serializer] = []
+custom_serializers: list[Serializer[Any, Any, Any]] = []
 
 
 def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
@@ -101,7 +101,7 @@ def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
         [
             (i, t, driver)
             for driver in custom_serializers + common_serializers
-            if is_subtype(typ, driver.obj_type)
+            if is_subtype(typ, driver.obj_type) and scope.match(driver.scopes)
             for i, t in enumerate(
                 SerializationTarget.match(driver.serialization_targets, targets, scope, lossless)
             )
@@ -226,7 +226,10 @@ def serialize[T2: Serialized](
         typ=annotation if annotation is not None else type(instance),
         targets=[target_type] if target_type is not None else None,
         scope=scope,
-        lossless=lossless,
+        # Without a requested target the driver picks its preferred format, so
+        # there is no format to judge: the lossless filter applies only once a
+        # target is asked for.
+        lossless=lossless if target_type is not None else False,
     )
 
     if len(candidates) == 0:
@@ -329,6 +332,6 @@ def estimate_serialized_size[T2: Serialized](
             )
 
 
-def register_serializer(ser: Serializer) -> None:
+def register_serializer(ser: Serializer[Any, Any, Any]) -> None:
     """Register a custom serializer."""
     custom_serializers.append(ser)

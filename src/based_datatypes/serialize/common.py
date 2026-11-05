@@ -1074,6 +1074,10 @@ try:
     class SQLSerializer(CommonSerializer[SQLStatement, str | SQLFile]):
         """Serializer for SQL statements."""
 
+        # The text target and the ``.sql`` file hold the same reformatted
+        # statements, so losslessness is declared once for both.
+        __lossless_values__ = False
+
         @override
         def serialize(
             self,
@@ -1362,6 +1366,10 @@ try:
 
     class HTMLSerializer(CommonSerializer[BeautifulSoup, str | HTMLFile]):
         """Serializer for BeautifulSoup HTML."""
+
+        # The text target and the ``.html`` file hold the same re-rendered
+        # markup, so losslessness is declared once for both.
+        __lossless_values__ = False
 
         @override
         def serialize(

@@ -20,7 +20,7 @@ from based_datatypes.typing import Runtyped, TypeRef
 class TransportScope(ABC):
     """Base class for the scope of a serialization operation."""
 
-    def match(self, scopes: Collection[TransportScope]) -> bool:
+    def match(self, scopes: Collection[TransportScope | type[TransportScope]]) -> bool:
         """Check whether this scope matches any of the requested scopes.
 
         A scope matches the request when it is the same scope or a
@@ -32,31 +32,14 @@ class TransportScope(ABC):
         Returns:
             ``True`` if one of the declared scopes is this scope or narrower.
         """
-        return any(isinstance(scope_type, type(self)) for scope_type in scopes)
-
-
-# @dataclass(frozen=True)
-# class IPC(TransportScope):
-#     """Serialization across processes within the same OS."""
-
-#     source_process_id: int
-#     """The process ID of the source process."""
-
-
-# @dataclass(frozen=True)
-# class LAN(IPC):
-#     """Serialization across a local area network."""
-
-#     private_subnet: str
-#     """The subnet for LAN communication in CIDR notation (e.g., '192.168.1.0/24')."""
-
-
-# @dataclass(frozen=True)
-# class WAN(LAN):
-#     """Indicates serialization for communication purposes across a wide area network."""
-
-#     source_region: str | None = None
-#     """Name of the region for WAN communication (e.g., 'us-east-1')."""
+        return any(
+            (
+                isinstance(scope, type(self))
+                if isinstance(scope, TransportScope)
+                else issubclass(scope, type(self))
+            )
+            for scope in scopes
+        )
 
 
 @dataclass(frozen=True)
@@ -280,12 +263,21 @@ class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
     __lossless_mimes__: frozenset[str] = frozenset()
     """MIME types this serializer round-trips exactly; empty marks every file format lossy."""
 
+    __lossless_values__: bool = True
+    """Whether the serializer's non-file targets round-trip the object exactly.
+
+    A value target is the same encoding as the file target of the same format,
+    so a serializer whose text output is lossy — SQL and HTML re-render the
+    object rather than reproducing it — declares ``False`` here as well.
+    """
+
     @classmethod
     def lossless_target(cls, hint: TypeDef[Any]) -> bool:
         """Whether a target format round-trips the object exactly.
 
-        Primitive targets always round-trip; a file target does exactly when all
-        of its MIME types are declared lossless by the serializer.
+        A file target does exactly when all of its MIME types are declared
+        lossless by the serializer; a target that is not a file follows
+        :attr:`__lossless_values__`.
 
         Args:
             hint: The target type to check.
@@ -295,12 +287,29 @@ class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
         """
         mimes = target_mimes(hint)
 
-        return all(mime in cls.__lossless_mimes__ for mime in mimes) if mimes else True
+        return (
+            all(mime in cls.__lossless_mimes__ for mime in mimes)
+            if mimes
+            else cls.__lossless_values__
+        )
+
+    @prop(cached=True, mode="class")
+    def scopes(self) -> tuple[type[S], ...]:
+        """The scope classes this serializer declares through its ``S`` type argument.
+
+        A scope value carries data (a process id, a subnet), so the class-level
+        declaration is the type argument itself; selection compares it with the
+        requested scope instead of materializing a value that would lose that data.
+        """
+        return (cast(type[S], self._typeref.typevar_map[S].resolved_type_def),)
 
     @prop(cached=True, mode="class")
     def serialization_targets(self) -> list[SerializationTarget[T, S, Any]]:
         """Serialization targets supported by this serializer, as declared in its type arguments."""
         typeref = self._typeref.typevar_map[T]
+        # Each generated target is unrestricted: the scope restriction a
+        # serializer declares is a class (``scopes``) and is applied during
+        # selection, since a scope value cannot be built from its class alone.
         return cast(
             list[SerializationTarget[T, S, Any]],
             [

@@ -69,8 +69,12 @@ def cached_method[S, R, **P](
         if cache_name not in namespace:
             setattr(self, cache_name, {})
 
+        # The function is part of the key: a decorated override and the decorated
+        # base method it calls through ``super()`` share one cache attribute per
+        # name, and without the function the override's result would be returned
+        # for the base implementation too.
         cache: dict[tuple[Any, ...], R] = namespace[cache_name]
-        key = (args, frozenset(kwargs.items()))
+        key = (func, args, frozenset(kwargs.items()))
 
         if key not in cache:
             cache[key] = func(self, *args, **kwargs)

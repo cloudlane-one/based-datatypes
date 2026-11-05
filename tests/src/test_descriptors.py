@@ -467,3 +467,21 @@ def test_cached_method_rejects_unhashable_arguments() -> None:
 
     with pytest.raises(TypeError):
         user.compute([1], factor=1)  # pyright: ignore[reportArgumentType]
+
+
+class CachedOverride(CachedMethodUser):
+    """Override that delegates to the decorated base implementation."""
+
+    @cached_method
+    def compute(self, value: int, *, factor: int = 1) -> int:
+        """Add one to the base result."""
+        return super().compute(value, factor=factor) + 1
+
+
+def test_cached_method_base_and_override_do_not_share_a_cache() -> None:
+    """A cached override does not hand its own result to the base implementation."""
+    user = CachedOverride()
+
+    assert user.compute(2) == 3
+    assert user.compute(2) == 3
+    assert CachedMethodUser.compute(user, 2) == 2
