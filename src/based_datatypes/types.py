@@ -4,9 +4,10 @@ from collections.abc import Iterable
 from dataclasses import Field, dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
-from enum import auto
+from enum import Enum, auto
 from types import UnionType
 from typing import (
+    Annotated,
     Any,
     ClassVar,
     ForwardRef,
@@ -22,7 +23,7 @@ from typing import (
 
 from pydantic import GetCoreSchemaHandler
 from pydantic_core import core_schema
-from typing_extensions import TypeForm
+from typing_extensions import Sentinel
 
 from .enums import StrEnum
 
@@ -104,24 +105,6 @@ U_cov = TypeVar("U_cov", covariant=True)
 
 type AnnotationScanType = type[Any] | TypeAliasType | GenericAlias[Any] | NewType | ForwardRef | str
 
-type AnyTypeHint = (
-    TypeForm[object]
-    | SingleTypeDef[Any]
-    | TypeVar
-    | TypeVarTuple
-    | ForwardRef
-    | TypeAliasType
-    | NewType
-    | UnionType
-    | str
-)
-"""Any hint expression the reflection helpers accept.
-
-``TypeForm[object]`` covers classes, named aliases, generics, unions,
-``Literal``, ``Annotated``, ``NewType`` and ``None``; bare type variables and
-unevaluated forward references are runtime-only forms and are added explicitly.
-"""
-
 
 @runtime_checkable
 class GenericAlias[T](Protocol):
@@ -134,8 +117,44 @@ class GenericAlias[T](Protocol):
     __args__: tuple[AnnotationScanType, ...]
     __origin__: type[T]
 
+    def __mro_entries__(self, bases: tuple[type, ...]) -> tuple[type, ...]:  # noqa: D105
+        ...
 
-type SingleTypeDef[T] = GenericAlias[T] | TypeAliasType | type[T] | NewType
+
+@runtime_checkable
+class LiteralGenericAlias[T](GenericAlias[T], Protocol):
+    """protocol for Literal types.
+
+    this since Python.typing _LiteralGenericAlias is private
+
+    """
+
+    def __eq__(self, other):  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D105
+        ...
+
+    def __hash__(self):  # pyright: ignore[reportIncompatibleMethodOverride]  # noqa: D105
+        ...
+
+
+type LiteralArg = str | int | float | bool | Enum
+
+type TypeRoot[T] = TypeAliasType | type[T] | Sentinel
+"""A named type object, which may be a concrete type or a type alias."""
+
+type TypeNode[T] = GenericAlias[T] | TypeRoot[T]
+"""A type root or a type root with substituted type vars."""
+
+type TypeMember[T] = type[T] | GenericAlias[T] | LiteralGenericAlias
+"""A type node, literal, or a union thereof"""
+
+type TypeDef[T] = TypeNode[T] | LiteralGenericAlias | UnionType | Annotated
+"""A type node, literal, or a union thereof"""
+
+type TypeScalar[T] = TypeDef[T] | TypeVar
+"""A type definition or a type variable."""
+
+type TypeExpr[T] = TypeScalar[T] | TypeVar | TypeVarTuple
+"""A type scalar or a type var tuple."""
 
 
 @runtime_checkable

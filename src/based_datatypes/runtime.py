@@ -5,12 +5,12 @@ from collections.abc import Callable, Sequence
 from types import ModuleType, UnionType
 from typing import Any, TypeVar
 
-from .types import SingleTypeDef
+from .types import TypeNode
 
 T = TypeVar("T")
 
 
-def _get_calling_frame(offset: int = 0):
+def _get_calling_frame(offset: int = 0) -> inspect.FrameInfo:
     stack = inspect.stack()
     if len(stack) < offset + 3:
         raise RuntimeError("No caller!")
@@ -54,7 +54,7 @@ def get_full_args_dict(
     return {**defaults, **posargs, **(kwargs or {})}
 
 
-def get_return_type(func: Callable) -> SingleTypeDef | UnionType | None:
+def get_return_type(func: Callable) -> TypeNode | UnionType | None:
     """Get the return type annotation of given function, if any."""
     sig = inspect.signature(func)
     return sig.return_annotation if sig.return_annotation != inspect.Signature.empty else None

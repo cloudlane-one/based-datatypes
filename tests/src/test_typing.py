@@ -1,18 +1,29 @@
 """Tests for the type-reflection functions in :mod:`based_datatypes.typing`."""
 
+import dataclasses
 import typing
-from collections.abc import Callable, Sequence
 from decimal import Decimal
 from types import ModuleType
-from typing import Any, Annotated, ForwardRef, Literal, TypeVar, get_args
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    ForwardRef,
+    Generic,
+    Literal,
+    ParamSpec,
+    TypeVar,
+    TypeVarTuple,
+    Unpack,
+    get_args,
+)
 
 import pydantic
 import pytest
-from beartype.roar import BeartypeDoorNonpepException
 
 from based_datatypes import typing as bt
-from based_datatypes.typing import TypeRef, TypeAwareClass
-
+from based_datatypes.files import File, LocalFile
+from based_datatypes.typing import Runtyped, TypeRef, is_subtype
 
 T = TypeVar("T")
 T_bound = TypeVar("T_bound", bound=int)
@@ -24,8 +35,15 @@ type AliasUnion = int | str
 type AliasGeneric[T] = list[T]
 type MaybeInt = int | None
 
+type LiteralAlias = Literal["a", 1]
+type NestedLiteralAlias = LiteralAlias
+type LiteralUnionAlias = NestedLiteralAlias | Literal["b", 2]
+type RecursiveLiteralAlias = Literal["a"] | list[RecursiveLiteralAlias]
+
 K = TypeVar("K")
 V = TypeVar("V")
+Ts = TypeVarTuple("Ts")  # pyright: ignore[reportGeneralTypeIssues]
+P = ParamSpec("P")
 
 
 def only_ref(value: TypeRef | tuple[TypeRef, ...]) -> TypeRef:
@@ -34,155 +52,54 @@ def only_ref(value: TypeRef | tuple[TypeRef, ...]) -> TypeRef:
     return value
 
 
-class Box[T](TypeAwareClass):
-    """Generic helper class for the type-argument tests."""
+class Box[T](Runtyped):
+    """Generic class aware of its type arguments."""
+
+    def __init__(self, item: T | None = None) -> None:
+        self.item = item
 
 
 class ChildBox[T](Box[T]):
     """Generic subclass used to exercise base ascent."""
 
 
-class Pair[K, V](TypeAwareClass):
+class Pair[K, V](Runtyped):
     """Two-parameter generic class."""
 
-
-def test_typedef_to_typeset_of_a_class() -> None:
-    """A plain class maps to itself."""
-    assert bt.typedef_to_typeset(int) == {int}
-
-
-def test_typedef_to_typeset_of_none() -> None:
-    """``None`` maps to ``NoneType``."""
-    assert bt.typedef_to_typeset(None) == {bt.NoneType}
+    def __init__(self, key: K | None = None, value: V | None = None) -> None:
+        self.key = key
+        self.value = value
 
 
-def test_typedef_to_typeset_of_a_union() -> None:
-    """Every union member is represented."""
-    assert bt.typedef_to_typeset(int | str) == {int, str}
+def test_is_type_hint_accepts_hints() -> None:
+    """Classes, unions, aliases and parameterized generics are type hints."""
+    assert bt.is_type_hint(int)
+    assert bt.is_type_hint(int | str)
+    assert bt.is_type_hint(list[int])
+    assert bt.is_type_hint(AliasInt)
+    assert bt.is_type_hint(AliasGeneric[int])
+    assert bt.is_type_hint(Annotated[int, "meta"])
 
 
-def test_typedef_to_typeset_of_a_nullable_union() -> None:
-    """An optional type includes ``NoneType`` by default."""
-    assert bt.typedef_to_typeset(int | None) == {int, bt.NoneType}
+def test_members_resolve_a_named_alias() -> None:
+    """A named alias is resolved before splitting."""
+    assert TypeRef(AliasUnion).members == {int, str}
+    assert TypeRef(AliasInt).members == {int}
 
 
-def test_typedef_to_typeset_can_remove_null() -> None:
-    """``remove_null`` drops ``NoneType`` from the result."""
-    assert bt.typedef_to_typeset(int | None, remove_null=True) == {int}
+def test_members_keep_a_parameterized_hint_whole() -> None:
+    """A non-union hint is returned as-is, arguments intact."""
+    assert TypeRef(list[int]).members == {list[int]}
+    assert TypeRef(int).members == {int}
 
 
-def test_typedef_to_typeset_of_a_generic_alias() -> None:
-    """A parameterised generic maps to its origin."""
-    assert bt.typedef_to_typeset(list[int]) == {list}
-    assert bt.typedef_to_typeset(dict[str, int]) == {dict}
-
-
-def test_typedef_to_typeset_of_a_literal() -> None:
-    """Literals carry no concrete class and map to ``object``."""
-    assert bt.typedef_to_typeset(Literal["a", 1]) == {object}
-
-
-def test_typedef_to_typeset_of_a_typevar() -> None:
-    """An unresolved type variable maps to ``object``."""
-    assert bt.typedef_to_typeset(T) == {object}
-
-
-def test_typedef_to_typeset_of_a_newtype() -> None:
-    """A ``NewType`` maps to its supertype."""
-    UserId = typing.NewType("UserId", int)
-
-    assert bt.typedef_to_typeset(UserId) == {int}
-
-
-def test_typedef_to_typeset_of_a_named_alias() -> None:
-    """A named alias maps to the typeset of its value."""
-    assert bt.typedef_to_typeset(AliasInt) == {int}
-    assert bt.typedef_to_typeset(AliasList) == {list}
-    assert bt.typedef_to_typeset(AliasUnion) == {int, str}
-
-
-def test_typedef_to_typeset_of_a_parameterised_alias() -> None:
-    """A parameterised named alias resolves its value's origin."""
-    assert bt.typedef_to_typeset(AliasGeneric[int]) == {list}
-
-
-def test_typedef_to_typeset_of_a_union_containing_an_alias() -> None:
-    """Aliases nested inside a union are flattened."""
-    assert bt.typedef_to_typeset(AliasInt | None) == {int, bt.NoneType}  # pyright: ignore[reportArgumentType]
-
-
-def test_typedef_to_typeset_of_a_forward_ref() -> None:
-    """An unevaluated forward reference maps to ``object``."""
-    assert bt.typedef_to_typeset(ForwardRef("int")) == {object}
-
-
-def test_typedef_to_typeset_of_an_annotated_hint() -> None:
-    """``Annotated`` maps to its underlying type."""
-    assert bt.typedef_to_typeset(Annotated[list[int], "meta"]) == {list}
-
-
-def test_is_subtype_of_a_builtin() -> None:
-    """``bool`` is a subtype of ``int``, but not the other way round."""
-    assert bt.is_subtype(bool, int)
-    assert not bt.is_subtype(int, bool)
-
-
-def test_is_subtype_against_object_and_any() -> None:
-    """Every type is a subtype of ``object`` and of ``Any``."""
-    assert bt.is_subtype(int, object)
-    assert bt.is_subtype(int, Any)
-
-
-def test_is_subtype_of_a_union() -> None:
-    """Each union member is a subtype of the union."""
-    assert bt.is_subtype(int, int | str)
-    assert bt.is_subtype(int | str, object)
-
-
-def test_is_subtype_of_a_generic() -> None:
-    """Generic arguments are compared, not just the origin."""
-    assert bt.is_subtype(list[int], list)
-    assert not bt.is_subtype(list[int], list[str])
-    assert bt.is_subtype(dict[str, int], typing.Mapping[str, int])
-
-
-def test_is_subtype_of_an_annotated_hint() -> None:
-    """Annotations do not change subtyping."""
-    assert bt.is_subtype(Annotated[int, "meta"], int)
-
-
-def test_is_subtype_of_a_literal() -> None:
-    """A literal value type is a subtype of its value type."""
-    assert bt.is_subtype(Literal["a"], str)
-    assert not bt.is_subtype(str, Literal["a"])
-
-
-def test_is_subtype_of_a_named_alias() -> None:
-    """A named alias is resolved before comparison."""
-    assert bt.is_subtype(AliasInt, object)
-    assert not bt.is_subtype(AliasUnion, int)
-
-
-def test_is_subtype_falls_back_to_typesets(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Hints beartype refuses are compared through their typesets."""
-
-    def _raise(*args: object, **kwargs: object) -> bool:
-        raise BeartypeDoorNonpepException("unsupported")
-
-    monkeypatch.setattr(bt, "is_subhint", _raise)
-
-    assert bt.is_subtype(int, object)
-    assert not bt.is_subtype(list[int], dict)
-
-
-def test_has_type_matches_values() -> None:
-    """``has_type`` validates a runtime value against a hint."""
-    assert bt.has_type(1, int)
-    assert not bt.has_type("1", int)
-    assert bt.has_type([1], list[int])
-    assert not bt.has_type(["x"], list[int])
+def test_is_type_hint_rejects_values() -> None:
+    """Instances and plain values are not type hints."""
+    assert not bt.is_type_hint(1)
+    assert not bt.is_type_hint("int")
+    assert not bt.is_type_hint([1])
+    assert not bt.is_type_hint({"a": 1})
+    assert not bt.is_type_hint(None)
 
 
 def test_get_lowest_common_base_of_an_empty_iterable() -> None:
@@ -203,31 +120,6 @@ def test_get_lowest_common_base_of_unrelated_types() -> None:
 def test_get_lowest_common_base_accepts_a_generator() -> None:
     """A one-shot iterable is consumed only once."""
     assert bt.get_lowest_common_base(t for t in (bool, int)) is int
-
-
-def test_extract_nullable_type_of_a_plain_type() -> None:
-    """A non-union hint is returned unchanged."""
-    assert bt.extract_nullable_type(int) is int
-
-
-def test_extract_nullable_type_of_an_optional() -> None:
-    """The non-``None`` member is extracted."""
-    assert bt.extract_nullable_type(int | None) is int
-
-
-def test_extract_nullable_type_of_none() -> None:
-    """``None`` has no non-null base."""
-    assert bt.extract_nullable_type(None) is None
-
-
-def test_extract_nullable_type_uses_the_common_base() -> None:
-    """Multiple members collapse to their common base."""
-    assert bt.extract_nullable_type(int | str | None) is object
-
-
-def test_extract_nullable_type_of_an_alias() -> None:
-    """A nullable named alias resolves through its typeset."""
-    assert bt.extract_nullable_type(MaybeInt) is int
 
 
 def test_get_inheritance_distance_for_the_same_class() -> None:
@@ -256,95 +148,48 @@ def test_get_inheritance_distance_requires_classes() -> None:
     assert bt.get_inheritance_distance(1, int) is None  # type: ignore[arg-type]
 
 
-def test_set_typeargs_positionally() -> None:
-    """Positional type arguments replace the parameters."""
-    assert bt.set_typeargs(list[T], [int]) == list[int]  # pyright: ignore[reportGeneralTypeIssues]
-    assert bt.set_typeargs(Box[T], [int]) == Box[int]  # pyright: ignore[reportGeneralTypeIssues]
-
-
-def test_set_typeargs_by_typevar() -> None:
-    """A mapping replaces the selected type variable."""
-    assert bt.set_typeargs(list[T], {T: str}) == list[str]  # pyright: ignore[reportGeneralTypeIssues]
-    assert bt.set_typeargs(Pair[K, V], {V: int}) == Pair[K, int]  # pyright: ignore[reportGeneralTypeIssues]
-
-
-def test_set_typeargs_rejects_non_generic_hints() -> None:
-    """A bare class has no type arguments to set."""
-    with pytest.raises(TypeError, match="not a generic type definition"):
-        bt.set_typeargs(int, [str])  # type: ignore[arg-type]
-
-
-def test_set_typeargs_rejects_an_empty_argument_list() -> None:
-    """At least one replacement is required."""
-    with pytest.raises(ValueError, match="At least one type argument"):
-        bt.set_typeargs(list[T], [])  # pyright: ignore[reportGeneralTypeIssues]
-
-
-def test_set_typeargs_rejects_an_unknown_typevar() -> None:
-    """A type variable the hint does not use is refused."""
-    with pytest.raises(ValueError, match="not a parameter"):
-        bt.set_typeargs(list[T], {TypeVar("Other"): int})  # pyright: ignore[reportGeneralTypeIssues]
-
-
-def test_get_typeargs_of_a_non_generic_instance() -> None:
-    """Instances without ``__orig_class__`` report no arguments."""
-    assert bt.get_typeargs([1]) is None
-    assert bt.get_typeargs(object()) is None
-
-
-def test_get_typeargs_of_a_generic_instance() -> None:
-    """A parameterised instance exposes its arguments."""
-
-    class Generic[T]:
-        pass
-
-    instance = Generic[int]()
-
-    assert bt.get_typeargs(instance) == (int,)
-
-
 def test_typeref_resolves_a_string_hint() -> None:
     """A string hint is evaluated in the given context."""
-    assert TypeRef("int").typedef is int
+    assert TypeRef("int").pure_type_def is int
 
 
 def test_typeref_resolves_a_string_hint_with_context() -> None:
     """The ``ctx`` mapping supplies names for evaluation."""
-    assert TypeRef("Missing", ctx={"Missing": int}).typedef is int
+    assert TypeRef("Missing", ctx={"Missing": int}).pure_type_def is int
 
 
 def test_typeref_reports_an_unknown_string_hint() -> None:
     """An unresolvable name raises ``NameError``."""
     with pytest.raises(NameError):
-        TypeRef("definitely_not_defined").typedef  # noqa: B018
+        TypeRef("definitely_not_defined").pure_type_def  # noqa: B018
 
 
 def test_typeref_resolves_a_forward_ref() -> None:
     """A ``ForwardRef`` is evaluated to a real hint."""
-    assert TypeRef(ForwardRef("int")).typedef is int
-    assert TypeRef(ForwardRef("list[int]")).typedef == list[int]
+    assert TypeRef(ForwardRef("int")).pure_type_def is int
+    assert TypeRef(ForwardRef("list[int]")).pure_type_def == list[int]
 
 
 def test_typeref_resolves_an_unbound_typevar_to_object() -> None:
     """A free type variable carries no constraint."""
-    assert TypeRef(T).typedef is object
+    assert TypeRef(T).pure_type_def is Any
 
 
 def test_typeref_resolves_a_bounded_typevar() -> None:
     """A bound type variable resolves to its bound."""
-    assert TypeRef(T_bound).typedef is int
+    assert TypeRef(T_bound).pure_type_def is int
 
 
 def test_typeref_resolves_a_defaulted_typevar() -> None:
     """A PEP 696 default is used when present."""
-    assert TypeRef(T_default).typedef is str
+    assert TypeRef(T_default).pure_type_def is str
 
 
 def test_typeref_substitutes_a_typevar() -> None:
     """Substitutions replace a free type variable."""
-    ref = TypeRef(T, subs={T: TypeRef(int)})
+    ref = TypeRef(T, subs={T: int})
 
-    assert ref.typedef is int
+    assert ref.pure_type_def is int
 
 
 def test_typeref_origin_of_a_generic_alias() -> None:
@@ -352,24 +197,14 @@ def test_typeref_origin_of_a_generic_alias() -> None:
     assert TypeRef(list[int]).origin is list
 
 
-def test_typeref_origin_of_a_typeref_aware_class() -> None:
-    """A ``TypeAwareClass`` instance reports its declaration class."""
+def test_typeref_origin_of_a_runtyped_class() -> None:
+    """A ``Runtyped`` instance reports its declaration class."""
     assert TypeRef(Box[int]).origin is Box
-
-
-def test_typeref_origin_of_a_named_alias() -> None:
-    """A named alias reports its value's origin."""
-    assert TypeRef(AliasList).origin is list
 
 
 def test_typeref_params_of_a_builtin_generic_are_empty() -> None:
     """Builtin generics declare no parameters."""
     assert TypeRef(list[int]).params == ()
-
-
-def test_typeref_params_of_a_typeref_aware_class() -> None:
-    """A ``TypeAwareClass`` exposes the declaration's parameters."""
-    assert len(TypeRef(Box[int]).params) == 1
 
 
 def test_typeref_params_of_literal_and_annotated_are_empty() -> None:
@@ -383,43 +218,45 @@ def test_typeref_args_of_a_generic_alias() -> None:
     assert TypeRef(dict[str, int]).args == (str, int)
 
 
-def test_typeref_args_of_a_typeref_aware_class() -> None:
-    """A ``TypeAwareClass`` instance reports its applied arguments."""
+def test_typeref_args_of_a_runtyped_class() -> None:
+    """A ``Runtyped`` instance reports its applied arguments."""
     assert TypeRef(Box[int]).args == (int,)
 
 
 def test_typeref_typeform_round_trips_builtin_generics() -> None:
     """Resolved typeforms equal the original hints."""
-    assert TypeRef(list[int]).typeform == list[int]
-    assert TypeRef(dict[str, int]).typeform == dict[str, int]
-    assert TypeRef(tuple[int, ...]).typeform == tuple[int, ...]
-    assert TypeRef(int | None).typeform == int | None
+    assert TypeRef(list[int]).resolved_type_def == list[int]
+    assert TypeRef(dict[str, int]).resolved_type_def == dict[str, int]
+    assert TypeRef(tuple[int, ...]).resolved_type_def == tuple[int, ...]
+    assert TypeRef(int | None).resolved_type_def == int | None
 
 
-def test_typeref_typeform_round_trips_special_forms() -> None:
-    """Literals and annotations keep their metadata."""
-    assert TypeRef(Literal["a", 1]).typeform == Literal["a", 1]
-    assert TypeRef(Annotated[int, "meta"]).typeform == Annotated[int, "meta"]
-
-
-def test_typeref_typeform_round_trips_a_typeref_aware_class() -> None:
-    """An applied ``TypeAwareClass`` round-trips unchanged."""
-    assert TypeRef(Box[int]).typeform is Box[int]
+def test_typeref_typeform_round_trips_a_runtyped_class() -> None:
+    """An applied ``Runtyped`` round-trips unchanged."""
+    assert TypeRef(Box[int]).resolved_type_def is Box[int]
 
 
 def test_typeref_typeform_substitutes_typevars() -> None:
     """A free type variable is replaced in the resolved typeform."""
     assert (
-        TypeRef(list[T], subs={T: TypeRef(int)}).typeform == list[int]  # pyright: ignore[reportGeneralTypeIssues]
+        TypeRef(
+            list[T],  # pyright: ignore[reportGeneralTypeIssues]
+            subs={T: int},
+        ).resolved_type_def
+        == list[int]
     )
     assert (
-        TypeRef(Box[T], subs={T: TypeRef(int)}).typeform == Box[int]  # pyright: ignore[reportGeneralTypeIssues]
+        TypeRef(
+            Box[T],  # pyright: ignore[reportGeneralTypeIssues]
+            subs={T: int},
+        ).resolved_type_def
+        == Box[int]
     )
 
 
 def test_typeref_typeform_of_a_named_alias_is_the_alias() -> None:
     """A named alias resolves to itself."""
-    assert TypeRef(AliasList).typeform is AliasList
+    assert TypeRef(AliasList).resolved_type_def is AliasList
 
 
 def test_typeref_typevar_map_of_a_builtin_generic_is_empty() -> None:
@@ -427,12 +264,12 @@ def test_typeref_typevar_map_of_a_builtin_generic_is_empty() -> None:
     assert TypeRef(list[int]).typevar_map == {}
 
 
-def test_typeref_typevar_map_of_a_typeref_aware_class() -> None:
+def test_typeref_typevar_map_of_a_runtyped_class() -> None:
     """Both the class' own and inherited type variables resolve to ``int``."""
     mapping = TypeRef(ChildBox[int]).typevar_map
 
     assert len(mapping) > 0
-    assert all(only_ref(ref).typeform is int for ref in mapping.values())
+    assert all(only_ref(ref).resolved_type_def is int for ref in mapping.values())
 
 
 def test_typeref_typevar_map_of_a_generic_alias() -> None:
@@ -440,35 +277,12 @@ def test_typeref_typevar_map_of_a_generic_alias() -> None:
     mapping = TypeRef(Box[int]).typevar_map
 
     assert len(mapping) == 1
-    assert only_ref(next(iter(mapping.values()))).typedef is int
+    assert only_ref(next(iter(mapping.values()))).pure_type_def is int
 
 
 def test_typeref_typevar_map_of_a_union_is_empty_for_concrete_members() -> None:
     """A union of concrete types binds nothing."""
     assert TypeRef(int | str).typevar_map == {}
-
-
-def test_typeref_scalar_typevar_map_excludes_typevar_tuples() -> None:
-    """Only scalar type-variable entries survive."""
-    mapping = TypeRef(Box[int]).scalar_typevar_map
-
-    assert set(mapping) == set(TypeRef(Box[int]).typevar_map)
-
-
-def test_typeref_local_typevar_map_maps_parameters_to_arguments() -> None:
-    """The local map binds the declaration's parameters."""
-    mapping = TypeRef(Box[int]).local_typevar_map
-
-    assert len(mapping) == 1
-    assert only_ref(next(iter(mapping.values()))).typedef is int
-
-
-def test_typeref_local_typevar_map_of_a_typevar_argument() -> None:
-    """An applied type variable is bound to the argument that was supplied."""
-    mapping = TypeRef(Box[T]).local_typevar_map  # pyright: ignore[reportGeneralTypeIssues]
-
-    assert len(mapping) == 1
-    assert only_ref(next(iter(mapping.values()))).hint is T
 
 
 def test_typeref_typeset_and_common_type() -> None:
@@ -481,57 +295,73 @@ def test_typeref_typeset_and_common_type() -> None:
 
 def test_typeref_single_typedef_of_a_union() -> None:
     """A union collapses to its common type."""
-    assert TypeRef(bool | int).single_typedef is int
-    assert TypeRef(int).single_typedef is int
+    assert TypeRef(bool | int).approx_single_typeform is int
+    assert TypeRef(int).approx_single_typeform is int
 
 
 def test_typeref_bases_of_a_plain_class() -> None:
     """A plain class reports its direct bases."""
-    assert TypeRef(list[int]).bases == (object,)
+    assert TypeRef(list[int]).bases == {list, object}
 
 
-def test_typeref_bases_of_a_typeref_aware_class() -> None:
+def test_typeref_bases_of_a_runtyped_class() -> None:
     """An applied class reports its declaration class as base."""
-    assert TypeRef(Box[int]).bases == (Box,)
+    assert TypeRef(Box[int]).bases == {Generic, Runtyped, Box}
 
 
 def test_typeref_annotation_and_literal_values() -> None:
     """Dynamic metadata and literal values are exposed."""
-    assert TypeRef(Annotated[int, "meta"]).annotation == "meta"
-    assert TypeRef(int).annotation is None
-    assert TypeRef(Literal["a", 1]).literal_values == ("a", 1)
-    assert TypeRef(int).literal_values == ()
+    assert TypeRef(Annotated[int, "meta"]).annotations[0] == "meta"
+    assert len(TypeRef(int).annotations) == 0
+    assert TypeRef(Literal["a", 1]).literal_values == {"a", 1}
+    assert TypeRef(int).literal_values == set()
 
 
-def test_typeref_arg_typerefs() -> None:
-    """Each type argument is wrapped in its own reference."""
-    refs = TypeRef(dict[str, int]).arg_typerefs
-
-    assert len(refs) == 2
-    assert refs[0].typedef is str
-    assert refs[1].typedef is int
+@pytest.mark.parametrize(
+    ("hint", "expected"),
+    [
+        (LiteralAlias, {"a", 1}),
+        (NestedLiteralAlias, {"a", 1}),
+        (LiteralUnionAlias, {"a", 1, "b", 2}),
+        (Literal["a", 1] | Literal["b", 2], {"a", 1, "b", 2}),
+        (typing.Union[Literal["a"], Literal["b"]], {"a", "b"}),  # noqa: UP007
+        (LiteralUnionAlias | Literal["c"], {"a", 1, "b", 2, "c"}),
+        (LiteralAlias | NestedLiteralAlias, {"a", 1}),
+        (LiteralAlias | Literal["a", "b"], {"a", 1, "b"}),
+        (Literal[1] | Literal[True], {1}),
+        (LiteralAlias | int | None, {"a", 1}),
+        (AliasInt, set()),
+        (AliasUnion, set()),
+        (list[Literal["a"]], set()),
+        (RecursiveLiteralAlias, {"a"}),
+    ],
+)
+def test_typeref_literal_values_resolves_aliases_and_unions(hint: Any, expected: set[Any]) -> None:
+    """Aliases and unions expose distinct literal values as a set."""
+    assert TypeRef(hint).literal_values == expected
 
 
 def test_typeref_origin_type_of_a_forward_ref() -> None:
     """A forward reference's head is resolved without full evaluation."""
-    assert TypeRef(ForwardRef("list[int]")).origin_type is list
-    assert TypeRef("dict[str, int]").origin_type is dict
+    assert TypeRef(ForwardRef("list[int]")).origin is list
+    assert TypeRef("dict[str, int]").origin is dict
 
 
 def test_typeref_origin_type_of_a_union_string() -> None:
     """A union string evaluates to the union itself."""
-    assert TypeRef("int | str").origin_type == int | str
+    assert TypeRef("int | str").origin == int | str
 
 
 def test_typeref_origin_type_of_an_invalid_string() -> None:
     """An unresolvable string reports no origin type."""
-    assert TypeRef("not a type!").origin_type is None
+    with pytest.raises(SyntaxError):
+        TypeRef("not a type!").origin
 
 
 def test_typeref_origin_type_of_a_plain_hint() -> None:
-    """A non-string hint delegates to ``get_origin``."""
-    assert TypeRef(list[int]).origin_type is list
-    assert TypeRef(int).origin_type is None
+    """A plain class is its own origin."""
+    assert TypeRef(list[int]).origin is list
+    assert TypeRef(int).origin is int
 
 
 def test_typeref_validate_accepts_matching_values() -> None:
@@ -582,33 +412,12 @@ def test_typeref_accepts_a_context_module(monkeypatch: pytest.MonkeyPatch) -> No
     module.__dict__["Alias"] = list[int]
     monkeypatch.setitem(__import__("sys").modules, module.__name__, module)
 
-    assert TypeRef("Alias", ctx_module=module).typedef == list[int]
+    assert TypeRef("Alias", ctx_module=module).pure_type_def == list[int]
 
 
 def test_none_type_is_exported() -> None:
     """The module re-exports ``NoneType`` for convenience."""
     assert bt.NoneType is type(None)
-
-
-def test_public_names_are_defined() -> None:
-    """The documented public helpers exist."""
-    for name in (
-        "typedef_to_typeset",
-        "is_subtype",
-        "has_type",
-        "get_lowest_common_base",
-        "extract_nullable_type",
-        "get_inheritance_distance",
-        "set_typeargs",
-        "get_typeargs",
-        "TypeRef",
-        "TypeAwareClass",
-        "is_frozen_dataclass",
-        "is_immutable",
-        "get_nondefault_methods",
-        "get_own_attrs",
-    ):
-        assert hasattr(bt, name)
 
 
 def test_decimal_is_a_supported_ordinal() -> None:
@@ -618,11 +427,567 @@ def test_decimal_is_a_supported_ordinal() -> None:
     assert Decimal in get_args(Ordinal.__value__)
 
 
-def test_sequence_matches_list() -> None:
-    """``list`` satisfies the ``Sequence`` ABC contract used by beartype."""
-    assert bt.is_subtype(list[int], Sequence[int])
+class TestRuntypedComparison:
+    """Tests for comparing applied ``Runtyped`` hints."""
+
+    def test_arguments_decide_the_subtype_relation(self) -> None:
+        """A file hint fits only a hint whose MIME type and IO type it satisfies."""
+        assert is_subtype(
+            File[Literal["application/json"], Any],
+            File[Literal["application/json", "application/yaml"], Any],
+        )
+        assert not is_subtype(
+            File[Literal["application/pickle"], Any],
+            File[Literal["application/json"], Any],
+        )
+
+    def test_trailing_parameters_may_be_omitted(self) -> None:
+        """A hint that supplies fewer arguments still compares the ones it has."""
+        assert is_subtype(
+            LocalFile[Literal["application/json"], Any, Any],
+            File[Literal["application/json"], Any],
+        )
 
 
-def test_callable_subtyping() -> None:
-    """Callables are compared structurally."""
-    assert bt.is_subtype(Callable[[int], str], Callable)
+class Nested[T](Box[T]):
+    """Generic subclass of another aware class."""
+
+
+@dataclasses.dataclass(frozen=True)
+class FrozenRecord:
+    """Frozen dataclass used by the immutability checks."""
+
+    value: int
+
+
+@dataclasses.dataclass
+class MutableRecord:
+    """Mutable dataclass used by the immutability checks."""
+
+    value: int
+
+
+class BaseWithMethod:
+    """Base class contributing an inherited method."""
+
+    base_attr: int = 0
+
+    def base_method(self) -> str:
+        """Return a marker from the base class."""
+        return "base"
+
+
+class WithMethod(BaseWithMethod):
+    """Class defining its own attributes on top of a base."""
+
+    own_attr: int = 1
+
+    def own_method(self) -> str:
+        """Return a marker from the subclass."""
+        return "own"
+
+    def __str__(self) -> str:
+        return "with-method"
+
+
+def test_class_getitem_creates_a_subclass() -> None:
+    """Subscripting a ``Runtyped`` yields a real subclass."""
+    assert issubclass(Box[int], Box)
+    assert isinstance(Box[int], type)
+
+
+def test_class_getitem_records_origin_and_arguments() -> None:
+    """The specialised class records its declaration and arguments."""
+    assert Box[int].__origin__ is Box
+    assert Box[int].__args__ == (int,)
+
+
+def test_class_getitem_caches_specialisations() -> None:
+    """Repeated subscription returns the same class object."""
+    assert Box[int] is Box[int]
+    assert Box[int] is not Box[str]
+
+
+def test_class_getitem_supports_multiple_parameters() -> None:
+    """Several arguments are stored as a tuple."""
+    assert Pair[str, int].__args__ == (str, int)
+    assert Pair[str, int].__origin__ is Pair
+
+
+def test_specialised_class_is_instantiable() -> None:
+    """A specialised class is a normal, instantiable class."""
+    instance = Box[int](1)
+
+    assert isinstance(instance, Box)
+    assert instance.item == 1
+
+
+def test_type_params_of_the_declaration() -> None:
+    """The declaration exposes its type parameters."""
+    assert len(TypeRef(Box).params) == 1
+    assert len(TypeRef(Pair).params) == 2
+
+
+def test_typeargs_of_a_specialisation_resolve_to_the_argument() -> None:
+    """The type-argument map resolves the parameter to the applied type."""
+    mapping = TypeRef(Box[int]).typevar_map
+
+    assert len(mapping) == 1
+    value = next(iter(mapping.values()))
+    assert not isinstance(value, tuple)
+    assert value.pure_type_def is int
+
+
+def test_typeargs_of_a_two_parameter_specialisation() -> None:
+    """Each parameter is bound to its own argument."""
+    mapping = TypeRef(Pair[str, int]).typevar_map
+
+    assert len(mapping) == 2
+    resolved = {
+        key.__name__: value.pure_type_def
+        for key, value in mapping.items()
+        if not isinstance(value, tuple)
+    }
+    assert set(resolved.values()) == {str, int}
+
+
+def test_typeargs_are_stable_per_class() -> None:
+    """Resolving the same specialisation twice yields the same bindings."""
+    first = TypeRef(Box[int]).typevar_map
+    second = TypeRef(Box[int]).typevar_map
+
+    assert first == second
+    ((_, value),) = first.items()
+    assert not isinstance(value, tuple)
+    assert value.pure_type_def is int
+
+
+def test_typeargs_of_an_unapplied_class_resolve_to_defaults() -> None:
+    """An unapplied class resolves unbound parameters to ``Any``."""
+    mapping = TypeRef(Box).typevar_map
+
+    assert len(mapping) == 1
+    ((key, value),) = mapping.items()
+    assert not isinstance(value, tuple)
+    assert value.hint is Any
+
+
+def test_generic_subclass_specialisation() -> None:
+    """A generic subclass specialises through its own origin."""
+    assert Nested[int].__origin__ is Nested
+    assert Nested[int].__args__ == (int,)
+    assert issubclass(Nested[int], Nested)
+
+
+def test_concrete_subclass_of_a_specialisation() -> None:
+    """Subclassing a specialised class yields a concrete class."""
+
+    class Concrete(Box[int]):
+        pass
+
+    assert Concrete.__origin__ is Concrete
+    assert Concrete.__args__ == ()
+    assert TypeRef(Concrete).params == ()
+    assert Concrete().item is None
+
+
+def test_typeref_round_trips_nested_specialisations() -> None:
+    """A nested generic alias resolves to the applied class."""
+    assert TypeRef(Nested[int]).resolved_type_def is Nested[int]
+    assert TypeRef(Box[list[int]]).resolved_type_def is Box[list[int]]
+
+
+def test_non_generic_subclass_gets_default_origin_and_args() -> None:
+    """A plain subclass still satisfies the ``Runtyped`` contract."""
+
+    class Plain(Runtyped):
+        pass
+
+    assert Plain.__origin__ is Plain
+    assert Plain.__args__ == ()
+    assert TypeRef(Plain).params == ()
+
+
+def test_is_frozen_dataclass_for_class_and_instance() -> None:
+    """Frozen dataclasses are recognised from either the class or an instance."""
+    assert bt.is_frozen_dataclass(FrozenRecord)
+    assert bt.is_frozen_dataclass(FrozenRecord(1))
+    assert not bt.is_frozen_dataclass(MutableRecord)
+    assert not bt.is_frozen_dataclass(MutableRecord(1))
+    assert not bt.is_frozen_dataclass(int)
+
+
+def test_is_immutable_for_builtin_scalars() -> None:
+    """Scalar builtins are immutable."""
+    for value in (1, 1.5, True, "text", b"bytes", frozenset({1})):
+        assert bt.is_immutable(value)
+
+
+def test_is_immutable_for_tuples_only_when_contents_are() -> None:
+    """Tuples are immutable when every element is."""
+    assert bt.is_immutable((1, "a", (2,)))
+    assert not bt.is_immutable((1, [2]))
+
+
+def test_is_immutable_for_frozen_dataclasses() -> None:
+    """Frozen dataclass instances are immutable."""
+    assert bt.is_immutable(FrozenRecord(1))
+    assert not bt.is_immutable(MutableRecord(1))
+
+
+def test_is_immutable_for_mutable_containers_and_objects() -> None:
+    """Lists, dicts and plain objects are mutable."""
+    assert not bt.is_immutable([1])
+    assert not bt.is_immutable({"a": 1})
+    assert not bt.is_immutable(object())
+
+
+def test_get_nondefault_methods_excludes_object_methods() -> None:
+    """Inherited ``object`` methods are filtered out."""
+    methods = bt.get_nondefault_methods(WithMethod)
+
+    assert "own_method" in methods
+    assert "base_method" in methods
+    assert "__str__" in methods
+    assert "__eq__" not in methods
+    assert "partialmethod" not in methods
+
+
+def test_get_own_attrs_reports_annotated_and_defined_names() -> None:
+    """Own attributes include class-body definitions and annotations."""
+    attrs = bt.get_own_attrs(WithMethod)
+
+    assert {"own_attr", "own_method"} <= attrs
+    assert "base_attr" not in attrs
+
+
+def test_get_own_attrs_includes_annotations() -> None:
+    """Class-level annotations without a value are reported."""
+
+    class Annotated:
+        declared: int
+
+    assert "declared" in bt.get_own_attrs(Annotated)
+
+
+def test_get_own_attrs_can_filter_by_value() -> None:
+    """The predicate filters attributes by their bound value."""
+    callables = bt.get_own_attrs(WithMethod, predicate=callable)
+
+    assert "own_method" in callables
+    assert "own_attr" not in callables
+
+
+def test_get_own_attrs_includes_requested_bases() -> None:
+    """``include_bases`` merges the bases' own attributes."""
+    attrs = bt.get_own_attrs(WithMethod, include_bases=(BaseWithMethod,))
+
+    assert "own_method" in attrs
+    assert "base_method" in attrs
+    assert "base_attr" in attrs
+
+
+def test_get_own_attrs_ignores_bases_not_in_the_hierarchy() -> None:
+    """A base the class does not inherit is not merged."""
+
+    class Unrelated:
+        unrelated_attr = 2
+
+    attrs = bt.get_own_attrs(WithMethod, include_bases=(Unrelated,))
+
+    assert "unrelated_attr" not in attrs
+
+
+def test_get_own_attrs_of_a_builtin_class() -> None:
+    """The helper works for builtin classes too."""
+    attrs = bt.get_own_attrs(bool)
+
+    assert "__and__" in attrs
+    assert "__class__" not in attrs
+
+
+def test_runtyped_class_does_not_require_arguments() -> None:
+    """A ``Runtyped`` subclass may itself accept no arguments."""
+    instance: Any = Box()
+    assert instance.item is None
+
+
+def test_typeref_none_and_typevar_resolution() -> None:
+    """None, variadic variables, defaults and overrides resolve consistently."""
+    variadic = TypeVarTuple("Ts")  # pyright: ignore[reportGeneralTypeIssues]
+    defaulted_variadic = TypeVarTuple(  # pyright: ignore[reportGeneralTypeIssues]
+        "Ts_default", default=Unpack[tuple[int, str]]
+    )
+
+    assert TypeRef(None).pure_type_def is bt.NoneType
+    assert TypeRef(variadic).pure_type_def is tuple
+    assert TypeRef(defaulted_variadic).scalar_args == (int, str)
+    assert TypeRef(T, subs={T: str}, overrides={T: int}).pure_type_def is int
+    assert TypeRef("T", subs={T: int}).pure_type_def is int
+    assert TypeRef(ForwardRef("T"), overrides={T: str}).pure_type_def is str
+
+
+def test_typeref_nested_annotations_and_variadic_tuples() -> None:
+    """Nested metadata is flattened and unpacked repetitions round-trip."""
+    hint = Annotated[
+        Annotated[list[T], "inner"], "outer"  # pyright: ignore[reportGeneralTypeIssues]
+    ]
+    variadic = tuple[int, *tuple[str, ...]]
+
+    assert TypeRef(hint, subs={T: int}).annotations == (  # pyright: ignore[reportArgumentType]
+        "inner",
+        "outer",
+    )
+    assert (
+        TypeRef(hint, subs={T: int}).runtime_type_def  # pyright: ignore[reportArgumentType]
+        == Annotated[list[int], "inner", "outer"]
+    )
+    assert TypeRef(variadic).scalar_args == (int, bt.RepType(str))
+    assert TypeRef(variadic).resolved_type_def == tuple[int, Unpack[tuple[str, ...]]]  # noqa: UP044
+    union = variadic | list[str]
+    assert (
+        TypeRef(union).resolved_type_def
+        == tuple[int, Unpack[tuple[str, ...]]] | list[str]  # noqa: UP044
+    )
+    assert variadic in TypeRef(union).members
+    assert is_subtype(variadic, union)
+
+
+def test_typeref_from_instance_and_approximations() -> None:
+    """Instances and approximate nodes retain useful generic information."""
+
+    class GenericBox(Generic[T]):
+        pass
+
+    instance = GenericBox[int]()
+    union = TypeRef(int | str)
+
+    assert TypeRef.from_instance(instance).resolved_type_def == GenericBox[int]
+    assert TypeRef.from_instance(1).pure_type_def is int
+    assert union.exact_type_node is None
+    assert union.approx_type_node is object
+    assert TypeRef(Literal["x"]).concrete_type is None
+
+
+def test_typeref_attribute_validation() -> None:
+    """Dataclass attributes are checked, with class and init variables skipped."""
+
+    @dataclasses.dataclass
+    class Record:
+        value: int
+        kind: ClassVar[str] = "record"
+        temporary: dataclasses.InitVar[int] = 0
+
+    assert TypeRef(Record).validate(Record(1))
+    assert not TypeRef(Record).validate(Record("wrong"))  # type: ignore[arg-type]
+    assert TypeRef(Record).validate(Record("wrong"), with_attrs=False)  # type: ignore[arg-type]
+    assert TypeRef(int).attr_typehints is None
+
+
+def test_runtyped_structural_validation_and_comparison() -> None:
+    """Recorded arguments decide validation and structural subtype relations."""
+    assert TypeRef(Box[int]).validate(Box[int](1))
+    assert not TypeRef(Box[str]).validate(Box[int](1))
+    assert TypeRef(Box[int]).is_supertype_of(Box[int])
+    assert is_subtype(Box[int], Box)
+    assert not is_subtype(Box[int], Pair[int, int])
+
+
+def test_runtyped_rejects_unrelated_origins() -> None:
+    """Structural comparison does not bypass normal class inheritance."""
+
+    class Other[T](Runtyped):
+        pass
+
+    assert not is_subtype(Box[int], Other[int])
+
+
+def test_validate_reports_a_missing_attribute() -> None:
+    """An instance lacking an annotated attribute fails validation."""
+
+    @dataclasses.dataclass
+    class Record:
+        value: int
+
+    record = Record(1)
+    del record.value
+
+    assert not TypeRef(Record).validate(record)
+
+
+def test_validate_skips_unresolvable_attribute_hints() -> None:
+    """A hint that cannot be checked is skipped instead of failing."""
+
+    @dataclasses.dataclass
+    class Record:
+        value: Literal[object()]  # type: ignore[valid-type]
+
+    assert TypeRef(Record).validate(Record(1))
+
+
+def test_annotations_flatten_through_a_forward_ref() -> None:
+    """Nested ``Annotated`` metadata is flattened even behind a forward ref."""
+    hint = Annotated[ForwardRef("Annotated[int, 'inner']"), "outer"]
+
+    assert TypeRef(hint).annotations == ("inner", "outer")
+
+
+def test_scalar_args_unpacks_a_typevar_tuple() -> None:
+    """An ``Unpack`` of a type variable tuple contributes no scalar arguments."""
+    variadic = TypeVarTuple("Ts")  # pyright: ignore[reportGeneralTypeIssues]
+
+    assert TypeRef(
+        tuple[int, *variadic]  # pyright: ignore[reportGeneralTypeIssues]
+    ).scalar_args == (int,)
+
+
+def test_scalar_args_unpacks_a_fixed_tuple() -> None:
+    """An ``Unpack`` of a fixed tuple contributes each of its members."""
+    assert TypeRef(tuple[int, *tuple[str, int]]).scalar_args == (int, str, int)
+
+
+def test_concrete_type_of_a_union_is_none() -> None:
+    """A union has no single concrete type."""
+    assert TypeRef(int | str).concrete_type is None
+    assert TypeRef(typing.Union[int, str]).concrete_type is None  # noqa: UP007
+
+
+def test_typevar_map_of_a_literal_is_empty() -> None:
+    """A literal binds no type variables."""
+    assert TypeRef(Literal["a"]).typevar_map == {}
+
+
+def test_typevar_map_merges_union_members() -> None:
+    """The same type variable bound by several union members is unioned."""
+    mapping = TypeRef(Pair[int, str] | Pair[float, bytes]).typevar_map
+
+    assert {var.__name__ for var in mapping} == {"K", "V"}
+    resolved = {var.__name__: only_ref(ref).pure_type_def for var, ref in mapping.items()}
+    assert resolved == {"K": int | float, "V": str | bytes}
+
+
+def test_attr_typehints_uses_a_descriptor_return_type() -> None:
+    """A descriptor attribute is described by the return type of ``__get__``."""
+
+    class Meta(type):
+        def __get__(cls, obj: Any, objtype: Any = None) -> int:
+            return 1
+
+    class DescriptorType(metaclass=Meta):
+        pass
+
+    @dataclasses.dataclass
+    class Record:
+        value: DescriptorType
+
+    assert TypeRef(Record).attr_typehints == {"value": DescriptorType}
+
+
+def test_attr_typehints_skips_hints_without_a_concrete_type() -> None:
+    """A literal annotation has no concrete type and is kept as-is."""
+
+    @dataclasses.dataclass
+    class Record:
+        value: Literal["a"]
+
+    assert TypeRef(Record).attr_typehints == {"value": Literal["a"]}
+
+
+def test_has_type_checks_instances() -> None:
+    """``has_type`` validates a value against a hint."""
+    assert bt.has_type(1, int)
+    assert not bt.has_type("x", int)
+
+
+def test_param_map_handles_a_repeating_argument() -> None:
+    """A star-unpacked tuple argument is matched from the end of the parameters."""
+
+    class Generic2(Generic[K, V]):
+        pass
+
+    mapping = TypeRef(
+        Generic2[*tuple[int, ...], str]  # pyright: ignore[reportInvalidTypeForm]
+    ).param_map
+
+    assert mapping == {V: str}
+
+
+def test_param_map_handles_a_single_repeating_argument() -> None:
+    """A lone repeating argument binds the parameter to its element type."""
+
+    class Generic1(Generic[K]):
+        pass
+
+    assert TypeRef(
+        Generic1[*tuple[int, ...]]  # pyright: ignore[reportInvalidTypeForm]
+    ).param_map == {K: int}
+
+
+def test_param_map_handles_variadic_parameters() -> None:
+    """A type variable tuple consumes all remaining arguments."""
+
+    class Variadic(Generic[*Ts]):
+        pass
+
+    assert TypeRef(Variadic[int, str]).param_map == {Ts: int}
+
+
+def test_param_map_handles_variadic_parameters_with_a_repeating_argument() -> None:
+    """A repeating argument leaves the variadic parameter unbound."""
+
+    class Variadic(Generic[*Ts]):
+        pass
+
+    assert TypeRef(Variadic[*tuple[int, ...], str]).param_map == {}
+
+
+def test_forward_ref_falls_back_to_the_private_evaluator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the public helper the private evaluator is used."""
+    monkeypatch.setattr(bt, "_evaluate_forward_ref", None)
+
+    with pytest.warns(DeprecationWarning):
+        assert TypeRef(ForwardRef("int")).pure_type_def is int
+
+
+def test_from_instance_ignores_a_union_orig_class() -> None:
+    """A union ``__orig_class__`` has no exact node and falls back to the class."""
+
+    class GenericBox(Generic[T]):
+        pass
+
+    instance = GenericBox[int]()
+    instance.__orig_class__ = int | str  # type: ignore[assignment]
+
+    assert TypeRef.from_instance(instance).pure_type_def is GenericBox
+
+
+def test_attr_typehints_keeps_a_non_method_descriptor() -> None:
+    """A descriptor whose ``__get__`` is not a method keeps its own hint."""
+
+    @dataclasses.dataclass
+    class Record:
+        value: property
+
+    assert TypeRef(Record).attr_typehints == {"value": property}
+
+
+def test_param_map_skips_a_param_spec() -> None:
+    """A ``ParamSpec`` parameter is not bound to a type argument."""
+
+    class WithParamSpec(Generic[P, T]):
+        pass
+
+    assert TypeRef(WithParamSpec[[int], str]).param_map == {T: str}
+
+
+def test_param_map_handles_a_variadic_parameter_before_a_typevar() -> None:
+    """A repeating argument leaves the variadic parameter unbound but binds later ones."""
+
+    class Mixed(Generic[*Ts, T]):
+        pass
+
+    mapping = TypeRef(Mixed[*tuple[int, ...], str]).param_map
+
+    assert mapping == {T: str}
