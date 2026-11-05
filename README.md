@@ -9,6 +9,8 @@ arbitrary object to a file format, how to hash a dataframe deterministically. It
 only — no CLI and no services; the file and serialization helpers touch the disk only when
 asked to.
 
+📖 **Documentation: <https://cloudlane-one.github.io/based-datatypes/>**
+
 ## Install
 
 The package is not published on PyPI yet; install it from the Git remote:
@@ -60,9 +62,12 @@ print(gen_str_hash({"host": "localhost", "port": 8080}))
 
 ## Documentation
 
-The full documentation lives in [`/docs`](docs/index.md):
+The full documentation lives in [`/docs`](docs/index.md) and is published at
+<https://cloudlane-one.github.io/based-datatypes/>.
 
-- [Documentation home](docs/index.md) — the entry point for every guide.
+- [Published documentation](https://cloudlane-one.github.io/based-datatypes/) — the rendered
+  site, deployed from `main` on every push.
+- [Documentation home](docs/index.md) — the source of that site's landing page.
 - The usage guides linked in the table above — one task-oriented page per module, with
   runnable examples.
 - [Python API reference](docs/ref-python-api.md) — generated from the docstrings, covering
