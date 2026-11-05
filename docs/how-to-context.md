@@ -64,9 +64,8 @@ print(flag.get())
 
 ## API
 
-| Name | Purpose |
-| --- | --- |
-| `set_ctx_var(var, value)` | Context manager yielding `value`; restores the previous value on exit. |
+Outside the `set_ctx_var` helper demonstrated above, the module has no public names; see the
+[API reference](ref-python-api.md#based_datatypes.context) for its signature.
 
 ## Contexts stay isolated
 

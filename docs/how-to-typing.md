@@ -25,19 +25,14 @@ print(has_type([1, 2], list[int]), has_type(["a"], list[int]))
 
 ## API overview
 
-| Name | Purpose |
-| --- | --- |
-| `TypeRef(hint, ...)` | Resolved reference to a hint: origin, arguments, parameters, union `members`, resolved type definition, type-variable map, validation. |
-| `Runtyped` | Base class whose subclasses remember the arguments they were parameterised with. |
-| `TypeRef(hint).typeset` | The set of concrete classes a hint can produce (`int \| None` → `{int, NoneType}`). |
-| `is_subtype(type_, supertype)` | Subtyping test over generic and special-form hints. |
-| `has_type(obj, type_)` | Runtime value check driven by a hint (beartype). |
-| `is_type_hint(obj)` | Whether an object describes a type rather than being a value of one. |
-| `get_lowest_common_base(types)` | Most derived shared base of several classes. |
-| `get_inheritance_distance(cls, base)` | Signed number of steps between two classes. |
-| `is_frozen_dataclass` / `is_immutable` | Dataclass and immutability predicates. |
-| `get_nondefault_methods` / `get_own_attrs` | Attribute introspection without inherited noise. |
-| `TypeDef` / `TypeNode` | The unions of hint expressions the helpers accept. |
+`TypeRef` is the entry point: it wraps a hint and exposes its origin, arguments, parameters,
+union members, resolved definition, type-variable map and validation, all cached. `Runtyped`
+adds the runtime record of type arguments to a class. Around them sit the predicates and
+helpers `is_subtype`, `has_type`, `is_type_hint`, `get_lowest_common_base`,
+`get_inheritance_distance`, `is_frozen_dataclass`, `is_immutable`, `get_nondefault_methods` and
+`get_own_attrs`, plus `NoneType`, `OrderedSet` and `RepType`. Signatures and docstrings are in
+the [API reference](ref-python-api.md#based_datatypes.typing); the sections below show how the
+pieces fit together.
 
 ## From a hint to concrete classes
 

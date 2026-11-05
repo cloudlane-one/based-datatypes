@@ -193,3 +193,7 @@ print(flatten_dict(config))
     A self-reference resolves to the partially-built result for that mapping, so it
     contributes no extra leaf. The output therefore omits the recursive key entirely rather
     than emitting an empty path.
+
+Signatures and docstrings for `copy_and_override`, `container_to_dict`, `flatten_dict` and
+`MaskedInit` are in the [API reference](ref-python-api.md#based_datatypes.data).
+

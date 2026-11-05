@@ -32,12 +32,11 @@ print("plugins:", [cls.__name__ for cls in get_subclasses(Plugin)])
 
 ## API
 
-| Name | Purpose |
-| --- | --- |
-| `get_calling_module(offset=0)` | Module that called the current function; `offset` walks further up the stack. |
-| `get_full_args_dict(func, args, kwargs=None)` | Parameter-name → value mapping for a call, including defaults. |
-| `get_return_type(func)` | The `return` annotation, or `None` when absent. |
-| `get_subclasses(cls, max_level=None)` | All descendants, direct children first, without duplicates. |
+The four functions are exercised in the sections below. `get_calling_module(offset=0)` walks
+up the stack by `offset` frames, `get_full_args_dict(func, args, kwargs=None)` fills in
+defaults, `get_return_type(func)` reads the annotation unevaluated, and
+`get_subclasses(cls, max_level=None)` walks descendants. Signatures and docstrings are in the
+[API reference](ref-python-api.md#based_datatypes.runtime).
 
 ## Which module called me
 

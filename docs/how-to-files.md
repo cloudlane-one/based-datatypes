@@ -135,3 +135,8 @@ Every file carries an `io_type` (`TextIO` or `BinaryIO`) and a `detected_format`
 `"text"` or `"binary"`. `from_path` decides from the file's tags, and falls back to the MIME
 type for a path that does not exist yet. Serializers use this to reject a text target
 for a binary format before any bytes are written.
+
+The abstract bases `File` and `Dir`, the concrete `LocalFile`, `MemoryFile` and `LocalDir`, the
+MIME tables and `ensure_dir_exists` are documented in the
+[API reference](ref-python-api.md#based_datatypes.files).
+

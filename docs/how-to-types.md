@@ -27,24 +27,20 @@ print(repr(status))
 print(Attr("value"))
 ```
 
-## Public names
+## What the module holds
 
-| Name | Kind | Meaning |
-| --- | --- | --- |
-| `UUID4` | `str` subclass | Nominal UUID4 string. No format validation. |
-| `Not` | `StrEnum` | `defined`, `resolved`, `handled`, `changed`: unresolved or unhandled states. |
-| `Ordinal` | named alias | `bool \| int \| float \| Decimal \| datetime \| date \| time \| timedelta \| str`. |
-| `Attr` | frozen dataclass | Reference to an attribute name; used as a dict key in `data.container_to_dict`. |
-| `ContraType` | dataclass | Wraps a contravariant type argument. |
-| `Undefined` | frozen dataclass | Marker for "type variable not defined". |
-| `DataclassInstance` | protocol | Anything exposing `__dataclass_fields__`. |
-| `StatePicklable` | protocol | Anything with `__getstate__`. |
-| `ArgsPicklable` / `ArgsPicklableEx` | protocols | Pickle reconstruction hooks. |
-| `RuntimeValidated` | protocol | Objects implementing `__get_pydantic_core_schema__`. |
-| `GenericAlias` | protocol | Parameterised generics such as `list[int]`. |
-| `SupportsItems` / `SupportsKeysAndGetItem` | protocols | Mapping-ish objects. |
-| `operator_methods` | list | The public list of dunder operator names. |
-| `AnyTypeHint` | named alias | Every hint expression the `typing` helpers accept. |
+The names fall into four groups; their signatures and docstrings are in the
+[API reference](ref-python-api.md#based_datatypes.types).
+
+- **Nominal strings**: `UUID4`.
+- **State markers**: `Not` (a `StrEnum` of `defined`, `resolved`, `handled` and `changed`),
+  `Undefined` and `ContraType`.
+- **Structural protocols**: `DataclassInstance`, `StatePicklable`, `ArgsPicklable`,
+  `ArgsPicklableEx`, `RuntimeValidated`, `GenericAlias`, `LiteralGenericAlias`, `SupportsItems`
+  and `SupportsKeysAndGetItem`.
+- **Shared aliases and vocabulary**: `Ordinal`, `Attr`, `operator_methods`, and the
+  type-expression unions `TypeRoot`, `TypeNode`, `TypeMember`, `TypeDef`, `TypeScalar` and
+  `TypeExpr` that the `typing` helpers accept (plus `AnnotationScanType` and `LiteralArg`).
 
 ## Protocols are structural
 

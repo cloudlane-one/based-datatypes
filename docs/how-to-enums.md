@@ -31,10 +31,9 @@ print(f"{color}!")
 
 ## API
 
-| Name | Purpose |
-| --- | --- |
-| `StrEnum` | `enum.StrEnum` subclass whose `repr` is the quoted value. |
-| `StrEnum.parse(value)` | Classmethod returning the member for a value; raises `ValueError` otherwise. |
+`StrEnum` and `parse` are the module's whole public surface; see the
+[API reference](ref-python-api.md#based_datatypes.enums) for their signatures and docstrings.
+`parse` is a typed counterpart of calling the enum itself.
 
 ## Members behave like strings
 

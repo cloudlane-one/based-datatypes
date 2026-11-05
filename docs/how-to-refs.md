@@ -28,16 +28,13 @@ print(reference.module.__name__)
 
 ## API
 
-| Name | Purpose |
-| --- | --- |
-| `PyObjectRef.reference(obj, version=None, version_strategy="major")` | Build a reference from a live object. |
-| `PyObjectRef.from_url(text, obj_type)` | Parse a reference URL back into a record. |
-| `PyObjectRef.url` | URL rendering of the record (cached). |
-| `PyObjectRef.module` / `.dist` / `.object` | Import, verify, and resolve on demand (cached). |
-| `PyObjectRef.docs_url` | Deep link into the package's documentation, when discoverable. |
-| `stref(obj)` | Short `module.qualname` string. |
-| `get_all_module_dependencies(module)` | External package names and internal modules a module uses. |
-| `version_diff`, `version_to_range`, `semver_range_to_spec` | Version arithmetic used by the record. |
+`PyObjectRef.reference(obj, version=None, version_strategy="major")` builds a record from a
+live object and `PyObjectRef.from_url(text, obj_type)` parses one back. The record exposes
+`url`, `module`, `dist`, `object` and `docs_url`; `stref(obj)` is the short `module.qualname`
+form. Version arithmetic (`version_diff`, `version_to_range`, `semver_range_to_spec`),
+`get_all_module_dependencies`, `get_versions_on_pypi` and `get_outdated_deps` live in the same
+module. Signatures and docstrings are in the
+[API reference](ref-python-api.md#based_datatypes.ref).
 
 ## What a reference records
 

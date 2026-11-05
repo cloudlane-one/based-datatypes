@@ -38,6 +38,10 @@ validation:
   absolute_links: warn
   unrecognized_links: warn
 
+# The pull request template is a GitHub document, not a documentation page.
+not_in_nav: |
+  /pull_request_template.md
+
 theme:
   name: material
   logo: img/logo-kit-white.png

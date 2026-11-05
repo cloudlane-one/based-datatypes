@@ -179,8 +179,42 @@ print(Factory("primary").describe())
     descriptor. A plain `self: ClassName` annotation is rejected — the call would not be
     type-safe through the class.
 
+## Cached methods
+
+`cached_method` is the method-level counterpart of `cached=True`: it memoises the result per
+instance, keyed by the arguments (and by the decorated function, so an override and the base
+implementation it calls through `super()` do not share a result). The cache lives in the
+instance's `__dict__`, so the class must allow attribute assignment.
+
+```python exec="on" session="descriptors"
+from based_datatypes.descriptors import cached_method
+
+
+class Report:
+    """Counts how often an expensive method actually ran."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    @cached_method
+    def rows(self, limit: int = 2) -> list[int]:
+        """Return the first ``limit`` rows."""
+        self.calls += 1
+        return list(range(limit))
+
+
+report = Report()
+print(len(report.rows()), len(report.rows(3)), report.calls)
+print(len(report.rows(3)), report.calls)
+
+```
+
 ## Marker classes
 
 `Read`, `Write`, `Delete` and `RWD` are capability markers used in `prop`'s typing. They
 form a small hierarchy (`Write` and `Delete` derive from `Read`, `RWD` from both) and are
 exported for annotations in downstream code.
+
+Signatures and docstrings for everything in this guide are in the
+[API reference](ref-python-api.md#based_datatypes.descriptors).
+

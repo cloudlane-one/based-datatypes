@@ -21,7 +21,9 @@ Requires Python 3.13 or newer.
 
 ## Usage guides
 
-Each module has a task-oriented guide with runnable examples:
+Each module has a task-oriented guide with runnable examples. Every guide links the matching
+section of the [Python API reference](ref-python-api.md) instead of repeating signatures and
+docstrings.
 
 <div class="grid cards" markdown>
 

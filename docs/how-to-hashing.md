@@ -28,10 +28,9 @@ print(gen_str_hash(first, length=6))
 
 ## API
 
-| Name | Purpose |
-| --- | --- |
-| `gen_int_hash(obj)` | Stable non-negative integer hash of a supported object. |
-| `gen_str_hash(obj, length=10)` | Left-truncated, zero-padded hex representation of `gen_int_hash`. |
+`gen_int_hash(obj)` returns the stable non-negative integer, and
+`gen_str_hash(obj, length=10)` its hex rendering. Their signatures are in the
+[API reference](ref-python-api.md#based_datatypes.hashing).
 
 ## What is supported
 
@@ -47,6 +46,7 @@ print(gen_str_hash(first, length=6))
 | `dict` | Key/value pairs, independent of insertion order. |
 | `set` | Members, independent of iteration order. |
 | pandas `DataFrame`, `Series`, `Index` | `pandas.util.hash_pandas_object`. |
+| polars `DataFrame`, `Series` | Row and series hashes, when polars is installed. |
 | Any other hashable object | Its own `__hash__` (see the caveat below). |
 | Unhashable dataclass | Hash of its field mapping. |
 | Unhashable object with `__getstate__` | Hash of the state mappings. |
@@ -103,7 +103,11 @@ cyclic.append(cyclic)
 print(gen_int_hash(cyclic) == gen_int_hash(cyclic))
 ```
 
-## Pandas
+## Dataframes
+
+`pandas` objects hash through `pandas.util.hash_pandas_object`; `polars` `DataFrame` and
+`Series` values hash through `hash_rows()` and `hash()` respectively. The polars branch is
+skipped when polars cannot be imported.
 
 ```python exec="on" session="hashing"
 import pandas as pd

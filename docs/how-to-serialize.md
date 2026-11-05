@@ -144,10 +144,10 @@ values serialize instead of failing halfway through the write.
 ## Choosing a format
 
 `get_serializers(typ, targets, scope, lossless)` returns the `(index, target, driver)` triples
-that can handle an object, ordered by how well the target matches. It is what `serialize` and
-`deserialize` use internally, and it is the way to ask *which* serializer would be picked. Passing
-`value=` matches the instance against each driver's declared object type as well, which is how a
-list of SQL statements is told apart from `[1, 2]`:
+that can handle an object, ordered by the position of the matching target — the caller's first
+target wins. It is what `serialize` and `deserialize` use internally, and it is the way to ask
+*which* serializer would be picked. Passing `value=` matches the instance against each driver's
+declared object type as well, which is how a list of SQL statements is told apart from `[1, 2]`:
 
 ```python exec="on" session="serialize"
 from typing import BinaryIO
@@ -304,6 +304,8 @@ print(restored["image"].path.name)
 ```
 
 Files read back as `LocalFile` handles, so they can be passed straight to `deserialize`.
+Rewriting a tree from its own structure (`write_structure(read_structure(path), path)`) is
+safe: each file's content is read before the entry it replaces is removed.
 
 A key must be one path component and must not be `__index__`: the key decides a file name, so a
 key such as `../outside` or an absolute path would write outside the tree, and `__index__` would
@@ -494,3 +496,12 @@ print(estimate_serialized_size(Document("hello"), File[Literal["text/plain"], Te
   `serialize(soup, str)` needs `lossless=False` exactly like the `.html` file does.
 - **A missing pair raises `ValueError`.** `serialize` and `deserialize` name the object type, the
   target and the active scope in the message.
+
+The public functions (`serialize`, `deserialize`, `get_serializers`, `estimate_serialized_size`,
+`register_serializer`, `read_structure`, `write_structure`), the `Serializer` and `Serializable`
+protocols, the scope classes and the shipped drivers are documented in the
+[API reference](ref-python-api.md#based_datatypes.serialize) and its submodules
+([`base`](ref-python-api.md#based_datatypes.serialize.base),
+[`common`](ref-python-api.md#based_datatypes.serialize.common),
+[`local_fs`](ref-python-api.md#based_datatypes.serialize.local_fs)).
+

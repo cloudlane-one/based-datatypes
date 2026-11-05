@@ -29,14 +29,11 @@ print(distribution.version)
 
 ## API
 
-| Name | Purpose |
-| --- | --- |
-| `get_distributions()` | Cached mapping of distribution name → `importlib.metadata` distribution. |
-| `get_module_file(module)` | `Path` of a module's source file, or `None` for built-ins. |
-| `get_module_distribution(module)` | Distribution that owns the module, or `None`. |
-| `get_file_repo(path)` / `get_module_repo(module)` | GitPython `Repo` containing the file/module, or `None`. |
-| `get_project_urls(dist, key)` | Values of the distribution's `Project-URL` entries with that key. |
-| `get_py_inventory(docs_url)` | Cached mapping of Python object names to inventory items. |
+The module is a set of functions over modules and distributions:
+`get_distributions`, `get_module_file`, `get_module_distribution`, `get_file_repo`,
+`get_module_repo`, `get_project_urls` and `get_py_inventory`. Each is demonstrated in the
+sections below, and their signatures are in the
+[API reference](ref-python-api.md#based_datatypes.dist).
 
 ## Installed distributions
 
