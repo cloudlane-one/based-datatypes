@@ -247,7 +247,10 @@ def serialize[T2: Serialized](
                 T2,
                 driver.__serialize__(
                     instance,
-                    target_type=target.type,
+                    # The caller's hint, not the declaration selection matched it
+                    # against: a requested ``LocalFile`` must still be resolved as
+                    # one, and only an omitted target falls back to the default.
+                    target_type=target_type if target_type is not None else target.type,
                     lossless=target.lossless,
                     scope=target.scope,
                     realm=realm,
@@ -260,7 +263,7 @@ def serialize[T2: Serialized](
                 T2,
                 driver.serialize(
                     instance,
-                    target_type=target.type,
+                    target_type=target_type if target_type is not None else target.type,
                     lossless=target.lossless,
                     scope=target.scope,
                     realm=realm,
@@ -317,7 +320,7 @@ def estimate_serialized_size[T2: Serialized](
         if isinstance(driver, type) and issubclass(driver, Serializable):
             return driver.__estimate_serialized_size__(
                 instance,
-                target_type=target.type,
+                target_type=target_type,
                 lossless=target.lossless,
                 scope=target.scope,
                 annotation=annotation,
@@ -325,7 +328,7 @@ def estimate_serialized_size[T2: Serialized](
         else:
             return driver.estimate_serialized_size(
                 instance,
-                target_type=target.type,
+                target_type=target_type,
                 lossless=target.lossless,
                 scope=target.scope,
                 annotation=annotation,

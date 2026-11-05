@@ -1082,6 +1082,24 @@ class TestBase:
         """An explicit dict target returns the value instead of a file."""
         assert serialize({"a": 1}, dict) == {"a": 1}
 
+    def test_a_requested_file_class_is_kept(self) -> None:
+        """A ``LocalFile`` target is not silently replaced by an in-memory file."""
+        with pytest.raises(ValueError, match="cannot create a LocalFile target"):
+            serialize({"a": 1}, LocalFile[Literal["application/json"], TextIO])
+
+    def test_a_requested_file_class_with_a_factory(self, workdir: Path) -> None:
+        """A ``LocalFile`` target and its factory produce that local file."""
+        target = local_file(workdir, "payload", "application/json")
+
+        written = serialize(
+            {"a": 1},
+            LocalFile[Literal["application/json"], TextIO],
+            file_factory=lambda: target,
+        )
+
+        assert written is target
+        assert target.path.read_text(encoding="utf-8").strip() == '{\n  "a": 1\n}'.strip()
+
 
 class TestLocalFS:
     """Tests for writing serialized structures to directories."""
