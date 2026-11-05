@@ -7,6 +7,7 @@ import json
 import pickle
 import uuid
 import xml.etree.ElementTree as xml  # noqa: N813
+from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
@@ -29,6 +30,7 @@ from based_datatypes.serialize import (
     Realm,
     SerializationTarget,
     TransportScope,
+    UnsupportedTargetError,
     _source_type,
     current_ser_ctx,
     custom_serializers,
@@ -174,7 +176,7 @@ class TestScalarSerializers:
 
             assert len(targets) >= 1
             assert all(target.lossless for target in targets)
-            assert all(target.scope == Open() for target in targets)
+            assert all(target.scope is Open for target in targets)
 
     def test_serialize_refuses_a_file_target(self) -> None:
         """A scalar cannot be written to a file on its own."""
@@ -947,9 +949,21 @@ class TestSelection:
         """A request outside the declared scope hierarchy finds no candidate."""
         assert select_scoped(ForeignScope()) == []
 
-    def test_an_open_request_accepts_every_declaration(self) -> None:
-        """An unrestricted request imposes no scope restriction."""
-        assert select_scoped(Open()) != []
+    def test_an_open_request_is_not_served_by_a_narrower_declaration(self) -> None:
+        """A scoped serializer cannot fulfil an unrestricted request."""
+        assert select_scoped(Open()) == []
+
+    def test_a_broader_declaration_serves_a_narrower_request(self) -> None:
+        """A declaration covers its own scope and every scope below it."""
+        target = SerializationTarget(type=str, scope=PrivateScope, lossless=True)
+
+        assert SerializationTarget.match([target], [str], PrivateNarrowScope(), False) != []
+
+    def test_a_narrower_declaration_does_not_serve_a_broader_request(self) -> None:
+        """A declaration for a narrower scope cannot carry a broader request."""
+        target = SerializationTarget(type=str, scope=PrivateNarrowScope, lossless=True)
+
+        assert SerializationTarget.match([target], [str], PrivateScope(), False) == []
 
     def test_generated_targets_keep_the_declared_order(self) -> None:
         """The union order of the declared formats survives reflection."""
@@ -1240,6 +1254,24 @@ class TestLocalFS:
         assert _extension(file) == ".txt"
         assert _extension(MemoryFile[Literal["text/plain"], TextIO](_suffix="")) == ""
 
+    def test_rewriting_a_tree_from_itself_keeps_the_files(self, tmp_path: Path) -> None:
+        """Writing a tree's own structure back over it does not delete the sources."""
+        file = MemoryFile[Literal["text/plain"], TextIO](content="body")
+        write_structure({"items": [file], "doc": {"blob": file}}, tmp_path / "out")
+
+        write_structure(read_structure(tmp_path / "out"), tmp_path / "out")
+
+        restored = read_structure(tmp_path / "out")
+        items = cast(list[SerializedValue], restored["items"])
+
+        assert cast(LocalFile[Any], items[0]).path.read_text(encoding="utf-8") == "body"
+        assert (
+            cast(LocalFile[Any], cast(dict[str, Any], restored["doc"])["blob"]).path.read_text(
+                encoding="utf-8"
+            )
+            == "body"
+        )
+
     def test_replacing_a_container_with_a_primitive_drops_the_tree(self, tmp_path: Path) -> None:
         """A primitive written over a container is not overlaid by the old tree."""
         write_structure({"a": {"x": 1}}, tmp_path / "out")
@@ -1313,7 +1345,11 @@ class PrivateScope(Open):
     """A narrower scope than the unrestricted one."""
 
 
-class ForeignScope(TransportScope):
+class PrivateNarrowScope(PrivateScope):
+    """A scope below the private one."""
+
+
+class ForeignScope(Open):
     """A scope a :class:`ScopedSerializer` does not declare."""
 
 
@@ -1360,6 +1396,163 @@ def select_scoped(scope: TransportScope) -> list[Any]:
         return get_serializers(float, [str], scope, False)
     finally:
         custom_serializers.remove(driver)
+
+
+class ScopeRecordingSerializer(Serializer[float, str, Open]):
+    """Serializer that records the scope it was dispatched with."""
+
+    def __init__(self) -> None:
+        """Start with no recording."""
+        self.seen: list[tuple[TransportScope, object]] = []
+
+    def serialize(
+        self,
+        instance: float,
+        target_type: Any = None,
+        lossless: bool = True,
+        scope: TransportScope = Open(),
+        annotation: Any = None,
+        realm: Realm | None = None,
+        file_factory: Any = None,
+    ) -> str:
+        """Record the scope and return the number as text."""
+        self.seen.append((scope, current_ser_ctx.get()[0].scope))
+        return repr(instance)
+
+    def deserialize(
+        self,
+        source: str,
+        scope: TransportScope = Open(),
+        realm: Realm | None = None,
+        annotation: Any = None,
+    ) -> float:
+        """Read the number back."""
+        return float(source)
+
+
+class RefusingSerializer(Serializer[float, str, Open]):
+    """Serializer that refuses every target it is asked for."""
+
+    def serialize(
+        self,
+        instance: float,
+        target_type: Any = None,
+        lossless: bool = True,
+        scope: TransportScope = Open(),
+        annotation: Any = None,
+        realm: Realm | None = None,
+        file_factory: Any = None,
+    ) -> str:
+        """Refuse the target."""
+        raise UnsupportedTargetError("refused: this driver cannot fulfil the target")
+
+    def deserialize(
+        self,
+        source: str,
+        scope: TransportScope = Open(),
+        realm: Realm | None = None,
+        annotation: Any = None,
+    ) -> float:
+        """Read the number back."""
+        return float(source)
+
+
+@dataclass
+class Point:
+    """A dataclass the container serializer reduces to a mapping."""
+
+    x: float
+    y: float
+
+
+class TestContainerSerializer:
+    """Tests for the generic container serializer."""
+
+    def test_a_list_stays_a_list(self) -> None:
+        """A list is serialized as a list of its serialized items."""
+        assert serialize([1, "two", {"three": 3}]) == [1, "two", {"three": 3}]
+
+    def test_nested_values_are_serialized(self) -> None:
+        """An item that is not JSON-shaped is serialized on its own."""
+        moment = dt.datetime(2024, 1, 2, 3, 4)
+
+        written = serialize({"when": moment, "id": uuid.UUID(int=1)})
+
+        assert written == {"when": moment.isoformat(), "id": str(uuid.UUID(int=1))}
+
+    def test_a_set_is_ordered_by_repr(self) -> None:
+        """A set has no order of its own, so the payload is sorted deterministically."""
+        assert serialize({"c", "a", "b"}) == ["a", "b", "c"]
+
+    def test_a_dataclass_reduces_to_a_mapping(self) -> None:
+        """A dataclass instance becomes a mapping of its fields."""
+        assert serialize(Point(1.5, 2.5)) == {"x": 1.5, "y": 2.5}
+
+    def test_a_nested_file_is_kept(self) -> None:
+        """An item that serializes to a file is nested as that file."""
+        written = serialize({"frame": pd.DataFrame({"x": [1, 2]})})
+
+        assert isinstance(cast(dict[str, Any], written)["frame"], File)
+
+    def test_no_file_target_is_offered(self) -> None:
+        """The driver reduces a container to a value, never to a file."""
+        with pytest.raises(ValueError, match="No suitable serializer found"):
+            serialize([1, 2], File[Literal["application/json"], TextIO])
+
+    def test_the_estimate_measures_the_payload(self) -> None:
+        """The estimate is the encoded JSON-shaped payload."""
+        assert estimate_serialized_size([1, 2], list[Any]) == len(
+            json.dumps([1, 2], indent=2).encode()
+        )
+
+    def test_deserialize_reads_a_value_source(self) -> None:
+        """A dictionary or list source is read back as it is."""
+        assert deserialize([1, 2], list) == [1, 2]
+
+    def test_a_plain_list_does_not_select_the_sql_serializer(self) -> None:
+        """Selection validates the value, so ``[1, 2]`` is a plain container."""
+        assert serialize([1, 2]) == [1, 2]
+
+    def test_a_statement_list_uses_the_sql_serializer(self) -> None:
+        """A list of statements still reaches the SQL serializer."""
+        written = serialize([sqla.text("select 1")], str, lossless=False)
+
+        assert "select 1" in cast(str, written).lower()
+
+    def test_a_refusing_serializer_falls_through(self) -> None:
+        """A driver that refuses the target hands over to the next candidate."""
+        driver = RefusingSerializer()
+        register_serializer(driver)
+
+        try:
+            written = serialize(1.5, lossless=False)
+        finally:
+            custom_serializers.remove(driver)
+
+        assert isinstance(written, File)
+
+    def test_the_refusal_is_raised_when_no_other_candidate_matches(self) -> None:
+        """Every candidate refusing the target surfaces the refusal."""
+        driver = RefusingSerializer()
+        register_serializer(driver)
+
+        try:
+            with pytest.raises(UnsupportedTargetError, match="refused"):
+                serialize(1.5, str, lossless=False)
+        finally:
+            custom_serializers.remove(driver)
+
+    def test_the_requested_scope_reaches_the_driver_and_the_context(self) -> None:
+        """Neither the driver nor the ambient context sees the declaration."""
+        driver = ScopeRecordingSerializer()
+        register_serializer(driver)
+
+        try:
+            serialize(1.5, str, lossless=False, scope=PrivateScope())
+        finally:
+            custom_serializers.remove(driver)
+
+        assert driver.seen == [(PrivateScope(), PrivateScope())]
 
 
 class Document:

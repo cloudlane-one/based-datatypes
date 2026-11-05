@@ -1,6 +1,7 @@
 """Arbitrary object serialization to files and JSON-supported values."""
 
 from collections.abc import Callable, Collection
+from dataclasses import replace
 from typing import Any, cast
 
 from based_datatypes.files import File
@@ -20,6 +21,7 @@ from .base import (
     SerializedValue,
     Serializer,
     TransportScope,
+    UnsupportedTargetError,
     current_ser_ctx,
     serialization_context,
 )
@@ -37,6 +39,7 @@ __all__ = [
     "TransportScope",
     "Serializable",
     "Serializer",
+    "UnsupportedTargetError",
     "current_ser_ctx",
     "custom_serializers",
     "estimate_serialized_size",
@@ -57,6 +60,7 @@ def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
     targets: Collection[TypeDef[T]] | None = None,
     scope: S = Open(),
     lossless: L = False,
+    value: object | None = None,
 ) -> list[tuple[int, SerializationTarget[T, S, L], Serializer[U, T, S] | type[Serializable[T, S]]]]:
     """Get the serializers that can handle a given type or instance.
 
@@ -66,10 +70,15 @@ def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
             matched on their MIME type and IO type, so the serializer for the actual
             format wins; types only narrow by class. ``None`` skips the target
             check and returns the serializers for the object type alone.
-        scope: The scope to select for. A serializer declared for a subclass scope
-            (e.g. WAN) also serves a request for its base scope (e.g. IPC).
+        scope: The scope to select for. A serializer declared for a supertype
+            scope (e.g. Open) also serves a request for a narrower one.
         lossless: When ``True``, only serializers that round-trip the target
             format without loss are eligible; ``False`` accepts either.
+        value: The instance to select for. A type alone cannot express element
+            constraints — an SQL statement list and ``[1, 2]`` are both ``list`` —
+            so a value is validated against the driver's declared object type as
+            well. ``None`` matches on the type only, which is what introspection
+            wants.
 
     Returns:
         A list of tuples of the form ``(index, target, driver)``, where
@@ -101,7 +110,7 @@ def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
         [
             (i, t, driver)
             for driver in custom_serializers + common_serializers
-            if is_subtype(typ, driver.obj_type) and scope.match(driver.scopes)
+            if _handles(driver, typ, value)
             for i, t in enumerate(
                 SerializationTarget.match(driver.serialization_targets, targets, scope, lossless)
             )
@@ -110,6 +119,84 @@ def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
     )  # Sort by index to prioritize the first match
 
     return candidates  # pyright: ignore[reportReturnType]
+
+
+def _handles(driver: Serializer[Any, Any, Any], typ: TypeDef[Any], value: object | None) -> bool:
+    """Check whether a driver handles a type, and the given value when there is one.
+
+    Args:
+        driver: The serializer to check.
+        typ: The type of the object to serialize.
+        value: The object itself, or ``None`` to match on the type alone.
+
+    Returns:
+        ``True`` if the driver declares the type and, when a value is given,
+        accepts that value.
+    """
+    if not is_subtype(typ, driver.obj_type):
+        return False
+
+    return value is None or TypeRef(driver.obj_type).validate(value)
+
+
+def _operation_target(
+    target: SerializationTarget[Any, Any, Any], scope: TransportScope
+) -> SerializationTarget[Any, Any, Any]:
+    """Return the target of one dispatch, carrying the requested scope.
+
+    The targets a serializer declares describe what it can serve; the scope of
+    the operation is the caller's, so it replaces the declaration before the
+    context is set and the driver is called.
+
+    Args:
+        target: The matching target from selection.
+        scope: The scope the operation requests.
+
+    Returns:
+        The same target with the requested scope.
+    """
+    return replace(target, scope=scope)
+
+
+def _dispatch[T](
+    candidates: Collection[tuple[int, SerializationTarget[Any, Any, Any], Any]],
+    call: Callable[[Any, SerializationTarget[Any, Any, Any]], T],
+    scope: TransportScope,
+    realm: Realm | None,
+) -> T:
+    """Run the first candidate that can fulfil the requested target.
+
+    A driver raises :class:`UnsupportedTargetError` when the requested format cannot
+    carry what it produced — a JSON file cannot hold a file written for a nested
+    item, for instance. That is a selection miss rather than a failure of the
+    request, so the next matching serializer is tried; the last refusal is
+    raised when none of them can fulfil the target.
+
+    Args:
+        candidates: The matching ``(index, target, driver)`` triples.
+        call: Invokes one driver with its operation target.
+        scope: The scope the operation requests.
+        realm: The realm of the operation.
+
+    Returns:
+        Whatever the first successful candidate returns.
+
+    Raises:
+        UnsupportedTargetError: If every candidate refuses the requested target.
+    """
+    failure: UnsupportedTargetError | None = None
+
+    for _, target, driver in candidates:
+        operation = _operation_target(target, scope)
+
+        with serialization_context(target=operation, realm=realm):
+            try:
+                return call(driver, operation)
+            except UnsupportedTargetError as error:
+                failure = error
+
+    assert failure is not None
+    raise failure
 
 
 def _source_type(source: Serialized) -> TypeDef[Any]:
@@ -230,6 +317,9 @@ def serialize[T2: Serialized](
         # there is no format to judge: the lossless filter applies only once a
         # target is asked for.
         lossless=lossless if target_type is not None else False,
+        # With no annotation the instance itself narrows the selection: a bare
+        # ``list`` cannot say whether it holds SQL statements or integers.
+        value=instance if annotation is None else None,
     )
 
     if len(candidates) == 0:
@@ -239,38 +329,35 @@ def serialize[T2: Serialized](
             f"with lossless={lossless}."
         )
 
-    _, target, driver = candidates[0]
-
-    with serialization_context(target=target, realm=realm):
-        if isinstance(driver, type) and issubclass(driver, Serializable):
-            return cast(
-                T2,
+    return cast(
+        T2,
+        _dispatch(
+            candidates,
+            lambda driver, target: (
                 driver.__serialize__(
                     instance,
-                    # The caller's hint, not the declaration selection matched it
-                    # against: a requested ``LocalFile`` must still be resolved as
-                    # one, and only an omitted target falls back to the default.
                     target_type=target_type if target_type is not None else target.type,
                     lossless=target.lossless,
-                    scope=target.scope,
+                    scope=scope,
                     realm=realm,
                     file_factory=file_factory,
                     annotation=annotation,
-                ),
-            )
-        else:
-            return cast(
-                T2,
-                driver.serialize(
+                )
+                if isinstance(driver, type)
+                else driver.serialize(
                     instance,
                     target_type=target_type if target_type is not None else target.type,
                     lossless=target.lossless,
-                    scope=target.scope,
+                    scope=scope,
                     realm=realm,
                     file_factory=file_factory,
                     annotation=annotation,
-                ),
-            )
+                )
+            ),
+            scope,
+            realm,
+        ),
+    )
 
 
 def estimate_serialized_size[T2: Serialized](
@@ -305,6 +392,7 @@ def estimate_serialized_size[T2: Serialized](
         targets=[target_type] if target_type is not None else None,
         scope=scope,
         lossless=lossless,
+        value=instance if annotation is None else None,
     )
 
     if len(candidates) == 0:
@@ -314,25 +402,28 @@ def estimate_serialized_size[T2: Serialized](
             f"with lossless={lossless}."
         )
 
-    _, target, driver = candidates[0]
-
-    with serialization_context(target=target, realm=realm):
-        if isinstance(driver, type) and issubclass(driver, Serializable):
-            return driver.__estimate_serialized_size__(
+    return _dispatch(
+        candidates,
+        lambda driver, target: (
+            driver.__estimate_serialized_size__(
                 instance,
                 target_type=target_type,
                 lossless=target.lossless,
-                scope=target.scope,
+                scope=scope,
                 annotation=annotation,
             )
-        else:
-            return driver.estimate_serialized_size(
+            if isinstance(driver, type)
+            else driver.estimate_serialized_size(
                 instance,
                 target_type=target_type,
                 lossless=target.lossless,
-                scope=target.scope,
+                scope=scope,
                 annotation=annotation,
             )
+        ),
+        scope,
+        realm,
+    )
 
 
 def register_serializer(ser: Serializer[Any, Any, Any]) -> None:

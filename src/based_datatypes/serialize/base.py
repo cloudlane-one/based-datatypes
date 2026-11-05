@@ -21,25 +21,41 @@ class TransportScope(ABC):
     """Base class for the scope of a serialization operation."""
 
     def match(self, scopes: Collection[TransportScope | type[TransportScope]]) -> bool:
-        """Check whether this scope matches any of the requested scopes.
+        """Check whether this declared scope can serve any of the requested scopes.
 
-        A scope matches the request when it is the same scope or a
-        narrower one.
+        The declaration is the receiver and the requests are the arguments: a
+        declaration serves a request when the request is an instance of the
+        declared scope, so a serializer declared for :class:`Open` serves every
+        request, while one declared for a narrower scope cannot serve an
+        unrestricted one. Scopes form a hierarchy rooted at :class:`Open`, and
+        the comparison is the class relation, never an exact-class match.
 
         Args:
-            scopes: The scope classes a serializer or serializable declares.
+            scopes: The requested scopes, as classes or values.
 
         Returns:
-            ``True`` if one of the declared scopes is this scope or narrower.
+            ``True`` if this declaration can serve at least one request.
         """
-        return any(
-            (
-                isinstance(scope, type(self))
-                if isinstance(scope, TransportScope)
-                else issubclass(scope, type(self))
-            )
-            for scope in scopes
-        )
+        return any(_scope_serves(self, scope) for scope in scopes)
+
+
+def _scope_serves(
+    declared: TransportScope | type[TransportScope],
+    requested: TransportScope | type[TransportScope],
+) -> bool:
+    """Check whether a declared scope can serve a requested scope.
+
+    Args:
+        declared: The scope a serializer or serializable declares.
+        requested: The scope the operation requests.
+
+    Returns:
+        ``True`` if the request is the declared scope or a narrower one.
+    """
+    declared_cls = declared if isinstance(declared, type) else type(declared)
+    requested_cls = requested if isinstance(requested, type) else type(requested)
+
+    return issubclass(requested_cls, declared_cls)
 
 
 @dataclass(frozen=True)
@@ -49,6 +65,17 @@ class Open(TransportScope):
 
 class Realm:
     """A class representing the realm into / from which serialization happens."""
+
+
+class UnsupportedTargetError(ValueError):
+    """A serializer cannot produce the requested target.
+
+    A driver raises this when the requested format cannot carry what it was
+    asked to write — a JSON or YAML file cannot hold a file produced for a
+    nested item, for example. :func:`serialize` and
+    :func:`estimate_serialized_size` treat it as a selection miss: they try the
+    next matching serializer and only raise when none can fulfil the target.
+    """
 
 
 type JSONScalar = str | int | float | bool | None
@@ -88,15 +115,21 @@ class SerializationTarget(Generic[T, S, L]):
     type: TypeDef[T]
     """The type of the target format."""
 
-    scope: S
-    """The scope for this target format."""
+    scope: type[S] | S
+    """The scope this target format is declared for.
+
+    A serializer's type argument names the scope class, while an explicit target
+    declaration may carry a scope value; :meth:`TransportScope.match` accepts
+    either. The requested scope of an operation is applied to the target when it
+    is dispatched, so this field only ever describes the declaration.
+    """
 
     lossless: L
     """Whether this target format supports lossless serialization."""
 
     @staticmethod
     def match(
-        targets: Iterable[SerializationTarget[Any, Open, Any]],
+        targets: Iterable[SerializationTarget[Any, Any, Any]],
         types: Collection[TypeDef[Serialized]] | None = None,
         scope: TransportScope | None = None,
         lossless: bool = True,
@@ -122,7 +155,7 @@ class SerializationTarget(Generic[T, S, L]):
                     if types is not None
                     else True
                 )
-                and (t.scope.match([scope]) if scope is not None else True)
+                and (_scope_serves(t.scope, scope) if scope is not None else True)
                 and (not lossless or t.lossless)
             ],
         )
@@ -307,16 +340,16 @@ class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
     def serialization_targets(self) -> list[SerializationTarget[T, S, Any]]:
         """Serialization targets supported by this serializer, as declared in its type arguments."""
         typeref = self._typeref.typevar_map[T]
-        # Each generated target is unrestricted: the scope restriction a
-        # serializer declares is a class (``scopes``) and is applied during
-        # selection, since a scope value cannot be built from its class alone.
+        # The declarations are the driver's: the requested scope of an operation
+        # is applied to the target when it is dispatched, so this metadata only
+        # states what the serializer itself can serve.
+        declared = self.scopes
         return cast(
             list[SerializationTarget[T, S, Any]],
             [
-                SerializationTarget(
-                    type=member, scope=Open(), lossless=self.lossless_target(member)
-                )
+                SerializationTarget(type=member, scope=scope, lossless=self.lossless_target(member))
                 for member in typeref.members
+                for scope in declared
             ],
         )
 

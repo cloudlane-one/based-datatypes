@@ -145,7 +145,9 @@ values serialize instead of failing halfway through the write.
 
 `get_serializers(typ, targets, scope, lossless)` returns the `(index, target, driver)` triples
 that can handle an object, ordered by how well the target matches. It is what `serialize` and
-`deserialize` use internally, and it is the way to ask *which* serializer would be picked:
+`deserialize` use internally, and it is the way to ask *which* serializer would be picked. Passing
+`value=` matches the instance against each driver's declared object type as well, which is how a
+list of SQL statements is told apart from `[1, 2]`:
 
 ```python exec="on" session="serialize"
 from typing import BinaryIO
@@ -196,14 +198,34 @@ separately with `__lossless_values__`; SQL and HTML declare `False`, because the
 the same lossy re-rendering as their file. Without a requested target the filter is not applied at
 all — `serialize(obj)` takes the first format the serializer declares.
 
+## Containers
+
+A container — a mapping, a sequence, a set or a dataclass instance — reduces to a dictionary or a
+list, with every item serialized on its own. That is what turns values JSON cannot hold into a
+JSON-shaped payload: a `datetime` becomes its ISO 8601 text, a dataclass becomes a mapping of its
+fields, and an item that serializes to a file (a dataframe, an image) is nested as that file. The
+driver declares the dictionary and list *value* targets only, so a container that holds files is
+still a valid payload for a directory tree, while writing JSON or YAML files stays with
+`JSONSerializer`.
+
+```python exec="on" session="serialize"
+import datetime as dt
+
+print(serialize({"created": dt.datetime(2024, 1, 1, 12)}))
+```
+
+A serializer that cannot fulfil the requested target raises `UnsupportedTargetError`. `serialize`
+then tries the next matching serializer and raises only when none is left, so several drivers can
+declare the same format with different capabilities; a custom serializer implements that contract
+when it supports only some of the formats it declares.
+
 ## Declaring a scope
 
 The third type argument of `Serializer[V, T, S]` declares the scope a serializer serves.
-Selection compares that class with the requested scope: a declaration for a narrower scope (say
-`LAN`) also serves a request for a broader one (`IPC`), and `Open` is the unrestricted end on both
-sides — an `Open` request accepts every declaration, and an `Open` declaration serves every
-request. A serializer that leaves `S` out declares `Open`, which is why the built-in drivers are
-usable everywhere.
+A declaration serves a request when the request is an instance of the declared scope, and every
+scope derives from `Open`: an `Open` declaration therefore serves every request, while a
+declaration for a narrower scope cannot serve an unrestricted (`Open`) one. A serializer that
+leaves `S` out declares `Open`, which is why the built-in drivers are usable everywhere.
 
 ```python exec="on" session="serialize"
 from based_datatypes.serialize import Open, get_serializers
@@ -213,7 +235,8 @@ print(get_serializers(dt.datetime, [str], Open(), lossless=False) != [])
 
 The declaration is a class, not a value: a scope carries data (a process id, a subnet), and only
 the caller knows it, so the value is supplied at call time while the class is what selection
-compares.
+compares. The scope the caller passes is what a serializer and the ambient `current_ser_ctx`
+see — never the declaration.
 
 ## Estimating the export size
 

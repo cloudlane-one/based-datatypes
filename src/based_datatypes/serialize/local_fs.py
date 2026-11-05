@@ -115,12 +115,31 @@ def _write_index(directory: Path, index: Any) -> None:
         stream.write(text)
 
 
-def _write_file(source: File, destination: Path) -> None:
-    """Copy the content of a serialized file to a local path."""
-    ensure_dir_exists(destination.parent)
+def _read_content(source: File) -> bytes | str:
+    """Read the content of a serialized file.
 
+    The content is read before any entry of the tree is removed, so rewriting a
+    tree with files it already holds (``write_structure(read_structure(path),
+    path)``) cannot delete a source it still has to copy.
+
+    Args:
+        source: The file to read.
+
+    Returns:
+        The text or bytes the file holds.
+    """
     with source.open("r") as stream:
-        content = stream.read()
+        return stream.read()
+
+
+def _write_content(content: bytes | str, destination: Path) -> None:
+    """Write read content to a local path.
+
+    Args:
+        content: The text or bytes to write.
+        destination: The path to write to.
+    """
+    ensure_dir_exists(destination.parent)
 
     if isinstance(content, str):
         with destination.open("w", encoding="utf-8", newline="") as target:
@@ -157,8 +176,9 @@ def _write_mapping(mapping: SerializedDict, directory: Path) -> None:
         name = _entry_name(key)
 
         if isinstance(value, File):
+            content = _read_content(value)
             _remove_previous(directory, name)
-            _write_file(value, directory / f"{name}{_extension(value)}")
+            _write_content(content, directory / f"{name}{_extension(value)}")
         elif isinstance(value, dict | list):
             _remove_previous(directory, name, keep_directory=True)
             _write_node(value, directory / name)
@@ -175,8 +195,9 @@ def _write_sequence(items: list[SerializedValue], directory: Path) -> None:
 
     for position, value in enumerate(items):
         if isinstance(value, File):
+            content = _read_content(value)
             _remove_previous(directory, str(position))
-            _write_file(value, directory / f"{position}{_extension(value)}")
+            _write_content(content, directory / f"{position}{_extension(value)}")
             index.append(None)
         elif isinstance(value, dict | list):
             _remove_previous(directory, str(position), keep_directory=True)

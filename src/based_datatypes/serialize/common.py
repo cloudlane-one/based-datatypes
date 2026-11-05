@@ -9,8 +9,9 @@ import json
 import pickle
 import uuid
 import xml.etree.ElementTree as xml  # noqa: N813
-from abc import abstractmethod
-from collections.abc import Callable, Sequence
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping, Sequence, Set
+from dataclasses import fields, is_dataclass
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
@@ -33,6 +34,7 @@ from .base import (
     SerializedDict,
     SerializedValue,
     Serializer,
+    UnsupportedTargetError,
     TransportScope,
     target_mimes,
 )
@@ -44,9 +46,7 @@ V = TypeVar("V")
 T = TypeVar("T", bound=Serialized)
 
 
-def check_type_and_cast[T](
-    obj: Any, annotation: TypeDef[Any] | None = None
-) -> T:  # pyright: ignore[reportInvalidTypeVarUse]
+def check_type_and_cast[T](obj: Any, annotation: TypeDef[Any] | None = None) -> T:  # pyright: ignore[reportInvalidTypeVarUse]
     """Check if the object matches the annotation type and cast it."""
     if annotation is not None and not TypeRef(annotation).validate(obj):
         raise TypeError(f"Object does not match expected type: {annotation}")
@@ -368,6 +368,78 @@ type JSONFile = (
 )
 
 
+class DataclassValue(ABC):
+    """Structural marker that matches every dataclass instance.
+
+    A dataclass shares no method that a protocol could key on, so the marker
+    uses the class hook instead of inheritance: any class carrying
+    ``__dataclass_fields__`` counts as a subclass.
+    """
+
+    @classmethod
+    def __subclasshook__(cls, subclass: type) -> bool:
+        """Treat every dataclass as a subclass of this marker."""
+        if cls is DataclassValue:
+            return hasattr(subclass, "__dataclass_fields__")
+
+        return NotImplemented
+
+
+type Container = Mapping[Any, Any] | Sequence[Any] | Set[Any] | DataclassValue
+"""Everything the container serializer handles as a whole."""
+
+
+def _container_payload(value: Any, scope: TransportScope, realm: Realm | None) -> SerializedValue:
+    """Turn one value into the JSON-shaped payload a container target can carry.
+
+    Scalar values, files and containers are handled here; anything else is
+    serialized on its own, which is how a datetime, a UUID or a dataclass ends up
+    as JSON data. A value that serializes to itself cannot be carried by a
+    container and is refused.
+
+    Args:
+        value: The value to convert.
+        scope: The serialization scope the operation requests.
+        realm: The realm of the operation.
+
+    Returns:
+        The JSON-shaped payload, with files kept for a value target.
+    """
+    if isinstance(value, File) or value is None or isinstance(value, str | int | float | bool):
+        return value
+
+    if isinstance(value, bytes | bytearray):
+        return base64.b64encode(bytes(value)).decode("ascii")
+
+    if isinstance(value, Mapping):
+        return {str(key): _container_payload(item, scope, realm) for key, item in value.items()}
+
+    if isinstance(value, list | tuple):
+        return [_container_payload(item, scope, realm) for item in value]
+
+    if isinstance(value, set | frozenset):
+        # A set has no order of its own; sorting by ``repr`` keeps the payload
+        # stable between runs.
+        return [_container_payload(item, scope, realm) for item in sorted(value, key=repr)]
+
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: _container_payload(getattr(value, field.name), scope, realm)
+            for field in fields(value)
+        }
+
+    # Imported here because the entry points of the package import this module.
+    from . import serialize
+
+    converted = serialize(value, scope=scope, realm=realm, lossless=False)
+    if converted is value:
+        raise UnsupportedTargetError(
+            f"{type(value).__name__} serializes to itself, so a container cannot carry it."
+        )
+
+    return _container_payload(converted, scope, realm)
+
+
 class JSONSerializer(CommonSerializer[JSONDict, SerializedDict | JSONFile]):
     """Serializer for JSON-shaped dictionaries."""
 
@@ -446,6 +518,98 @@ class JSONSerializer(CommonSerializer[JSONDict, SerializedDict | JSONFile]):
         mimes = target_mimes(target_type)
 
         return _json_estimate(instance, mimes[0] if len(mimes) > 0 else "application/json")
+
+
+class ContainerSerializer(CommonSerializer[Container, SerializedDict | list[SerializedValue]]):
+    """Serializer for mappings, sequences, sets and dataclass instances.
+
+    Every item is serialized on its own, so a container of datetimes, UUIDs,
+    dataclasses or further containers becomes JSON-shaped data as long as each
+    item can be serialized; an item that serializes to a file is nested in the
+    payload as that file, which is what a directory tree stores. All containers
+    reduce to a dictionary or a list, so this driver only declares those value
+    targets — writing JSON or YAML files stays with :class:`JSONSerializer`.
+    """
+
+    @override
+    def serialize(
+        self,
+        instance: Container,
+        target_type: TypeDef[Any] | None = None,
+        lossless: bool = True,
+        scope: TransportScope = Open(),
+        annotation: TypeDef[Any] | None = None,
+        realm: Realm | None = None,
+        file_factory: Callable[[], File] | None = None,
+    ) -> SerializedDict | list[SerializedValue]:
+        """Serialize a container to the JSON-shaped payload it reduces to.
+
+        Args:
+            instance: The container to serialize.
+            target_type: The target type or format to serialize to.
+            lossless: Whether to require a lossless serialization.
+            scope: The serialization scope to use for the serialization.
+            annotation: The declared type of the object, if any.
+            realm: The realm to serialize to.
+            file_factory: Unused; this serializer produces values, not files.
+
+        Returns:
+            The dictionary or list the container reduces to.
+
+        Raises:
+            UnsupportedTargetError: If a file target is requested, which this driver
+                does not produce.
+        """
+        if file_factory is not None or _is_file_hint(target_type):
+            raise UnsupportedTargetError(
+                f"{type(self).__name__} reduces a container to a value, not to a file; "
+                "serialize the payload to a file target through its own serializer."
+            )
+
+        return cast(
+            SerializedDict | list[SerializedValue],
+            _container_payload(instance, scope, realm),
+        )
+
+    @override
+    def deserialize(
+        self,
+        source: SerializedDict | list[SerializedValue],
+        scope: TransportScope = Open(),
+        realm: Realm | None = None,
+        annotation: TypeDef[Any] | None = None,
+    ) -> Any:
+        """Deserialize a container from the value it was reduced to.
+
+        Args:
+            source: The dictionary or list to read.
+            scope: The serialization scope to use for the deserialization.
+            realm: The realm to deserialize from.
+            annotation: The declared type of the object, if any.
+
+        Returns:
+            The JSON-shaped payload the source holds.
+        """
+        return check_type_and_cast(source, annotation)
+
+    @override
+    def estimate_serialized_size(
+        self,
+        instance: Container,
+        target_type: TypeDef[Any] | None = None,
+        lossless: bool = True,
+        scope: TransportScope = Open(),
+        annotation: TypeDef[Any] | None = None,
+    ) -> int:
+        """Measure the encoded container.
+
+        The payload is built first, because translating nested items is part of
+        the cost; the encoded size is then measured with the C-level JSON encoder.
+        """
+        payload = _container_payload(instance, scope, None)
+        mimes = target_mimes(target_type)
+
+        return _json_estimate(payload, mimes[0] if len(mimes) > 0 else "application/json")
 
 
 # XML
@@ -1672,8 +1836,9 @@ class EnumSerializer(PrimitiveSerializer[Enum, JSONScalar]):
 #
 # Order matters twice over: selection keeps the registration order between
 # serializers that declare a target at the same position, and a serializer for a
-# broad type must not shadow a serializer for a narrower one. The pickle
-# serializer accepts any object, so it comes last.
+# broad type must not shadow a serializer for a narrower one. The container
+# serializer comes after every specialized one it could otherwise shadow, and the
+# pickle serializer accepts any object, so it comes last.
 
 for _serializer in (
     JSONSerializer,
@@ -1695,6 +1860,7 @@ for _serializer in (
     PathSerializer,
     BytesSerializer,
     EnumSerializer,
+    ContainerSerializer,
     PickleSerializer,
 ):
     if _serializer is not None:
