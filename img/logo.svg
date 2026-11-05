@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Based Datatypes">
+  <title>Based Datatypes</title>
+  <g fill="none" stroke="#ffffff" stroke-width="52" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M168 140 L72 256 L168 372" />
+    <path d="M344 140 L440 256 L344 372" />
+  </g>
+  <path d="M256 178 L334 256 L256 334 L178 256 Z" fill="#c6f24e" />
+</svg>

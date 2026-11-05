@@ -1,0 +1,1951 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+      
+        <link rel="prev" href="how-to-files.html">
+      
+      
+        <link rel="next" href="how-to-descriptors.html">
+      
+      
+        
+      
+      
+      <link rel="icon" href="img/favicon.ico">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Serialization - Based Datatypes</title>
+      
+    
+    
+      <link rel="stylesheet" href="assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="assets/_markdown_exec_pyodide.css">
+    
+      <link rel="stylesheet" href="assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="css/mkdocstrings.css">
+    
+    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#serialization" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="index.html" title="Based Datatypes" class="md-header__button md-logo" aria-label="Based Datatypes" data-md-component="logo">
+      
+  <img src="img/logo-kit-white.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Based Datatypes
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Serialization
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m14.3 16-.7-2h-3.2l-.7 2H7.8L11 7h2l3.2 9zM20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12zm-9.15 3.96h2.3L12 9z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="purple"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_2" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="lime"  aria-label="Switch to system preference"  type="radio" name="__palette" id="__palette_2">
+    
+      <label class="md-header__button md-icon" title="Switch to system preference" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/cloudlane-one/based-datatypes" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cloudlane-one/based-datatypes
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="index.html" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="how-to-enums.html" class="md-tabs__link">
+          
+  
+  
+  Usage
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="how-to-contribute.html" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Development
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="ref-python-api.html" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="index.html" title="Based Datatypes" class="md-nav__button md-logo" aria-label="Based Datatypes" data-md-component="logo">
+      
+  <img src="img/logo-kit-white.png" alt="logo">
+
+    </a>
+    Based Datatypes
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/cloudlane-one/based-datatypes" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    cloudlane-one/based-datatypes
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="index.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Usage
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Usage
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-enums.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Enums
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-types.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Types and protocols
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-context.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context variables
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-runtime.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime reflection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-typing.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Type reflection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-hashing.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hashing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-data.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Data utilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-files.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Files and directories
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Serialization
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="how-to-serialize.html" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Serialization
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-use-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to use it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-can-be-serialized" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What can be serialized
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#values-json-cannot-hold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Values JSON cannot hold
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-back-with-an-expected-type" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading back with an expected type
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-a-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a format
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lossless-versus-lossy-formats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lossless versus lossy formats
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#containers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Containers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#declaring-a-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Declaring a scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#estimating-the-export-size" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimating the export size
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-a-serialized-dictionary-as-a-directory-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing a serialized dictionary as a directory tree
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-a-serializer-for-your-own-type" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing a serializer for your own type
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-serializable-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Serializable protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#traps-worth-knowing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Traps worth knowing
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-descriptors.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Descriptors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-refs.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Object references
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-dist.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="how-to-contribute.html" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_3" id="__nav_3_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Development
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-setup-locally.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How to setup this code repo locally
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-add-dependencies.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How to add dependencies
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to-check-quality.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How to check quality
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="ref-python-api.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="ref-directory-structure.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Directory Structure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="ref-code-conventions-tooling.html" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Coding Conventions and Tooling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#when-to-use-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        When to use it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-can-be-serialized" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What can be serialized
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#values-json-cannot-hold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Values JSON cannot hold
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-back-with-an-expected-type" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading back with an expected type
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#choosing-a-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Choosing a format
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lossless-versus-lossy-formats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lossless versus lossy formats
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#containers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Containers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#declaring-a-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Declaring a scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#estimating-the-export-size" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Estimating the export size
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-a-serialized-dictionary-as-a-directory-tree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing a serialized dictionary as a directory tree
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#writing-a-serializer-for-your-own-type" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writing a serializer for your own type
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-serializable-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Serializable protocol
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#traps-worth-knowing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Traps worth knowing
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+  <nav class="md-path" aria-label="Navigation" >
+    <ol class="md-path__list">
+      
+        
+  
+  
+    <li class="md-path__item">
+      <a href="index.html" class="md-path__link">
+        
+  <span class="md-ellipsis">
+    Home
+  </span>
+
+      </a>
+    </li>
+  
+
+      
+      
+        
+  
+  
+    
+    
+      <li class="md-path__item">
+        <a href="how-to-enums.html" class="md-path__link">
+          
+  <span class="md-ellipsis">
+    Usage
+  </span>
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ol>
+  </nav>
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/cloudlane-one/based-datatypes/edit/main/docs/how-to-serialize.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+    
+      
+    
+    <a href="https://github.com/cloudlane-one/based-datatypes/raw/main/docs/how-to-serialize.md" title="View source of this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 18c.56 0 1 .44 1 1s-.44 1-1 1-1-.44-1-1 .44-1 1-1m0-3c-2.73 0-5.06 1.66-6 4 .94 2.34 3.27 4 6 4s5.06-1.66 6-4c-.94-2.34-3.27-4-6-4m0 6.5a2.5 2.5 0 0 1-2.5-2.5 2.5 2.5 0 0 1 2.5-2.5 2.5 2.5 0 0 1 2.5 2.5 2.5 2.5 0 0 1-2.5 2.5M9.27 20H6V4h7v5h5v4.07c.7.08 1.36.25 2 .49V8l-6-6H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h4.5a8.2 8.2 0 0 1-1.23-2"/></svg>
+    </a>
+  
+
+
+<h1 id="serialization">Serialization<a class="headerlink" href="#serialization" title="Permanent link">¤</a></h1>
+<p><code>based_datatypes.serialize</code> turns Python objects into two families of output — files and
+JSON-supported values — without the caller wiring up a library per format. You describe <em>what</em>
+you have and <em>what you want</em>; the package picks a serializer that understands both, tells you
+whether the format is lossless, and can estimate how large the result would be before you
+produce it.</p>
+<h2 id="when-to-use-it">When to use it<a class="headerlink" href="#when-to-use-it" title="Permanent link">¤</a></h2>
+<ul>
+<li>Serialize a dict, model, dataframe, array, image, XML tree or SQL statement without importing
+  a different library for each format.</li>
+<li>Convert values JSON cannot hold — <code>datetime</code>, <code>complex</code>, <code>Decimal</code>, <code>UUID</code>, <code>bytes</code>, enums —
+  into something a JSON document can carry, and back again.</li>
+<li>Read content back while declaring the type you expect, so a mismatched source fails loudly.</li>
+<li>Ask for a lossless format when round-tripping matters, and accept a lossy one when it does not.</li>
+<li>Budget an export before producing it.</li>
+<li>Lay a serialized dictionary of files and primitives out as a directory tree.</li>
+</ul>
+<h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">¤</a></h2>
+<p 2_="2]" _1_="[1," _hello_:="'hello':" _items_:="'items':" _world_="'world',">dict True
+{
+  "hello": "world",
+  "items": [
+    1,
+    2
+  ]
+}</p>
+<p>The serializer comes from the <em>pair</em>: the object's type and the requested target. A <code>dict</code> going
+to <code>application/json</code> picks the JSON serializer; a <code>pandas.DataFrame</code> to <code>text/csv</code> picks the
+dataframe serializer; a <code>datetime</code> picks the ISO 8601 serializer, because no file is involved.</p>
+<h2 id="what-can-be-serialized">What can be serialized<a class="headerlink" href="#what-can-be-serialized" title="Permanent link">¤</a></h2>
+<table>
+<thead>
+<tr>
+<th>Object</th>
+<th>Targets</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dict</code> of JSON-shaped data</td>
+<td>JSON, YAML, itself</td>
+</tr>
+<tr>
+<td><code>pydantic.BaseModel</code></td>
+<td>JSON, YAML, <code>dict</code> of its dump</td>
+</tr>
+<tr>
+<td><code>pandas.DataFrame</code>, <code>polars.DataFrame</code></td>
+<td>CSV, parquet, Excel</td>
+</tr>
+<tr>
+<td><code>numpy.ndarray</code></td>
+<td><code>.npy</code>, <code>.npz</code>, CSV</td>
+</tr>
+<tr>
+<td><code>PIL.Image.Image</code></td>
+<td>PNG, TIFF, BMP, JPEG, GIF, WebP</td>
+</tr>
+<tr>
+<td><code>xml.etree.ElementTree</code></td>
+<td>XML text, XML file</td>
+</tr>
+<tr>
+<td><code>bs4.BeautifulSoup</code></td>
+<td>HTML text, HTML file</td>
+</tr>
+<tr>
+<td><code>sqlalchemy</code> statements</td>
+<td>SQL text, SQL file</td>
+</tr>
+<tr>
+<td><code>datetime</code>, <code>date</code>, <code>time</code></td>
+<td>ISO 8601 text</td>
+</tr>
+<tr>
+<td><code>timedelta</code></td>
+<td>a number of seconds</td>
+</tr>
+<tr>
+<td><code>complex</code></td>
+<td>a two-element <code>[real, imaginary]</code> list</td>
+</tr>
+<tr>
+<td><code>Decimal</code>, <code>uuid.UUID</code>, <code>pathlib.Path</code></td>
+<td>text</td>
+</tr>
+<tr>
+<td><code>bytes</code></td>
+<td>base64 text</td>
+</tr>
+<tr>
+<td><code>enum.Enum</code></td>
+<td>its value</td>
+</tr>
+<tr>
+<td>anything picklable</td>
+<td>pickle file</td>
+</tr>
+</tbody>
+</table>
+<p>Optional formats need the <code>common-serializers</code> extra:</p>
+<div class="language-bash highlight"><pre><span></span><code>uv<span class="w"> </span>add<span class="w"> </span><span class="s2">"based-datatypes[common-serializers] @ git+https://github.com/cloudlane-one/based-datatypes.git"</span>
+</code></pre></div>
+<p>It installs the serializer implementations (<code>numpy</code>, <code>pandas</code>+<code>pyarrow</code>+<code>openpyxl</code>, <code>polars</code>
+and its Excel backends, <code>pillow</code>, <code>beautifulsoup4</code>, <code>sqlalchemy</code>). Formats whose library is
+missing simply have no serializer, so selection reports no candidate instead of failing inside
+the serializer.</p>
+<h2 id="values-json-cannot-hold">Values JSON cannot hold<a class="headerlink" href="#values-json-cannot-hold" title="Permanent link">¤</a></h2>
+<p>Scalars serialize to the primitive that carries them, so they can be embedded in a JSON
+document and read back with the annotation you expect:</p>
+<p>datetime.datetime(2024, 1, 2, 3, 4, 5) -&gt; '2024-01-02T03:04:05'
+datetime.date(2024, 1, 2) -&gt; '2024-01-02'
+(3+4j) -&gt; [3.0, 4.0]
+Decimal('1.10') -&gt; '1.10'
+2024-01-02 03:04:05
+(3+4j)
+00000000-0000-0000-0000-000000000001
+aGVsbG8=</p>
+<p>These serializers produce values, not files: a scalar has nothing to put in a file of its own.
+Embed it in a dictionary or list when you want it on disk.</p>
+<h2 id="reading-back-with-an-expected-type">Reading back with an expected type<a class="headerlink" href="#reading-back-with-an-expected-type" title="Permanent link">¤</a></h2>
+<p><code>deserialize(source, annotation)</code> validates what it parsed against the annotation. A source that
+does not fit raises <code>TypeError</code>; a pair of source and annotation that no serializer handles
+raises <code>ValueError</code>:</p>
+<p>created: '2024-01-01T00:00:00'
+name: a</p>
+<p>name='a' created=datetime.datetime(2024, 1, 1, 0, 0)
+refused: No suitable serializer found for LocalFile[typing.Literal['application/yaml'], <class 'typing.TextIO'>, based_datatypes.files.Read | based_datatypes.files.Write] as list[int] under scope Open().</p>
+<p>Model fields are converted with pydantic's JSON mode first, so <code>datetime</code>, <code>UUID</code> and <code>Decimal</code>
+values serialize instead of failing halfway through the write.</p>
+<h2 id="choosing-a-format">Choosing a format<a class="headerlink" href="#choosing-a-format" title="Permanent link">¤</a></h2>
+<p><code>get_serializers(typ, targets, scope, lossless)</code> returns the <code>(index, target, driver)</code> triples
+that can handle an object, ordered by the position of the matching target — the caller's first
+target wins. It is what <code>serialize</code> and <code>deserialize</code> use internally, and it is the way to ask
+<em>which</em> serializer would be picked. Passing <code>value=</code> matches the instance against each driver's
+declared object type as well, which is how a list of SQL statements is told apart from <code>[1, 2]</code>:</p>
+<p>DateTimeSerializer, DateSerializer, PickleSerializer
+[]
+JSONSerializer handles dicts</p>
+<h2 id="lossless-versus-lossy-formats">Lossless versus lossy formats<a class="headerlink" href="#lossless-versus-lossy-formats" title="Permanent link">¤</a></h2>
+<p>Some formats reproduce the object exactly, others keep only a reduced representation. A
+serializer declares which of its MIME types round-trip, because one serializer can cover both:
+parquet keeps a dataframe's dtypes and values, CSV does not; PNG is lossless, JPEG is not.</p>
+<p>Pass <code>lossless=True</code> (the default) to require an exact round trip, <code>lossless=False</code> to accept a
+reduced one:</p>
+<p>PdSerializer
+PdSerializer</p>
+<p>Reading is not restricted this way: losslessness describes what an export can drop, so
+<code>deserialize</code> reads lossy formats as readily as lossless ones.</p>
+<p>A target that is not a file has no MIME type to declare, so a serializer states that case
+separately with <code>__lossless_values__</code>; SQL and HTML declare <code>False</code>, because their text target is
+the same lossy re-rendering as their file. Without a requested target the filter is not applied at
+all — <code>serialize(obj)</code> takes the first format the serializer declares.</p>
+<h2 id="containers">Containers<a class="headerlink" href="#containers" title="Permanent link">¤</a></h2>
+<p>A container — a mapping, a sequence, a set or a dataclass instance — reduces to a dictionary or a
+list, with every item serialized on its own. That is what turns values JSON cannot hold into a
+JSON-shaped payload: a <code>datetime</code> becomes its ISO 8601 text, a dataclass becomes a mapping of its
+fields, and an item that serializes to a file (a dataframe, an image) is nested as that file. The
+driver declares the dictionary and list <em>value</em> targets only, so a container that holds files is
+still a valid payload for a directory tree, while writing JSON or YAML files stays with
+<code>JSONSerializer</code>.</p>
+<p>{'created': '2024-01-01T12:00:00'}</p>
+<p>A serializer that cannot fulfil the requested target raises <code>UnsupportedTargetError</code>. <code>serialize</code>
+then tries the next matching serializer and raises only when none is left, so several drivers can
+declare the same format with different capabilities; a custom serializer implements that contract
+when it supports only some of the formats it declares.</p>
+<h2 id="declaring-a-scope">Declaring a scope<a class="headerlink" href="#declaring-a-scope" title="Permanent link">¤</a></h2>
+<p>The third type argument of <code>Serializer[V, T, S]</code> declares the scope a serializer serves.
+A declaration serves a request when the request is an instance of the declared scope, and every
+scope derives from <code>Open</code>: an <code>Open</code> declaration therefore serves every request, while a
+declaration for a narrower scope cannot serve an unrestricted (<code>Open</code>) one. A serializer that
+leaves <code>S</code> out declares <code>Open</code>, which is why the built-in drivers are usable everywhere.</p>
+<p>True</p>
+<p>The declaration is a class, not a value: a scope carries data (a process id, a subnet), and only
+the caller knows it, so the value is supplied at call time while the class is what selection
+compares. The scope the caller passes is what a serializer and the ambient <code>current_ser_ctx</code>
+see — never the declaration.</p>
+<h2 id="estimating-the-export-size">Estimating the export size<a class="headerlink" href="#estimating-the-export-size" title="Permanent link">¤</a></h2>
+<p><code>estimate_serialized_size(obj, target_type)</code> reports how many bytes the serialization would
+produce, without writing anything. Speed wins over accuracy: an estimate only performs a full
+serialization when that serialization <em>is</em> the cheap route — a single C-level pass — and
+otherwise samples or bounds the payload.</p>
+<table>
+<thead>
+<tr>
+<th>Format</th>
+<th>Basis</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>JSON</td>
+<td>exact, measured with the C encoder</td>
+</tr>
+<tr>
+<td>YAML</td>
+<td>the compact JSON payload, a rough upper bound (the YAML dumper is pure Python and ~150x slower)</td>
+</tr>
+<tr>
+<td>pydantic dumps</td>
+<td>the JSON-mode dump, measured like JSON</td>
+</tr>
+<tr>
+<td>XML</td>
+<td>exact, measured with the C serializer</td>
+</tr>
+<tr>
+<td>HTML</td>
+<td>a tag walk, about 10 % above the real size (rendering the soup is ~10x slower)</td>
+</tr>
+<tr>
+<td>SQL</td>
+<td>a strided sample of statements, formatted and extrapolated</td>
+</tr>
+<tr>
+<td>pickle</td>
+<td>exact, measured with the C pickler</td>
+</tr>
+<tr>
+<td>pandas/polars parquet</td>
+<td>in-memory / estimated size</td>
+</tr>
+<tr>
+<td>pandas, polars CSV</td>
+<td>sampled every n-th row and extrapolated</td>
+</tr>
+<tr>
+<td><code>.npy</code>, <code>.npz</code></td>
+<td>array payload plus the npy header</td>
+</tr>
+<tr>
+<td>images</td>
+<td>uncompressed pixel payload</td>
+</tr>
+</tbody>
+</table>
+<p>estimated 39
+written 39</p>
+<h2 id="writing-a-serialized-dictionary-as-a-directory-tree">Writing a serialized dictionary as a directory tree<a class="headerlink" href="#writing-a-serialized-dictionary-as-a-directory-tree" title="Permanent link">¤</a></h2>
+<p><code>write_structure</code> lays a dictionary of primitives and files out on disk:</p>
+<ul>
+<li>primitives are collected in <code>__index__.yaml</code> inside the directory,</li>
+<li>files are written next to it, named after their key,</li>
+<li>nested dictionaries and lists become sub-directories named after their key,</li>
+<li>the <code>__index__.yaml</code> of a list directory holds a YAML list, with <code>None</code> at the positions taken
+  by files and sub-directories, whose files are named after their position.</li>
+</ul>
+<p>['<strong>index</strong>.yaml', 'image.png', 'meta', 'size']
+name: thumbnail</p>
+<p>author: me</p>
+<p>thumbnail [2, 2] {'author': 'me', 'tags': ['a', 'b']}
+image.png</p>
+<p>Files read back as <code>LocalFile</code> handles, so they can be passed straight to <code>deserialize</code>.
+Rewriting a tree from its own structure (<code>write_structure(read_structure(path), path)</code>) is
+safe: each file's content is read before the entry it replaces is removed.</p>
+<p>A key must be one path component and must not be <code>__index__</code>: the key decides a file name, so a
+key such as <code>../outside</code> or an absolute path would write outside the tree, and <code>__index__</code> would
+take the name of the index. Both raise <code>ValueError</code> before anything is created. Replacing a key
+with a value of another shape (a file over a sub-directory, a primitive over a file) removes the
+old artifact instead of leaving it to shadow the new value; keys the new structure does not
+mention are left in place.</p>
+<h2 id="writing-a-serializer-for-your-own-type">Writing a serializer for your own type<a class="headerlink" href="#writing-a-serializer-for-your-own-type" title="Permanent link">¤</a></h2>
+<p>Subclass <code>Serializer[YourType, TargetHint]</code>, implement <code>serialize</code> and <code>deserialize</code>, and
+register an instance. The class's type arguments are what selection reads, and each member of
+the target union becomes a declared format:</p>
+<p>1.5,2.5
+1.5,2.5
+Point(1.5, 2.5)</p>
+<p><code>CommonSerializer</code> supplies the target handling: <code>_resolve_target</code> turns a target type or a
+<code>file_factory</code> into the file to write to, and returns <code>None</code> when the target is a plain value;
+<code>__lossless_mimes__</code> declares which of the declared MIME types round-trip exactly, and
+<code>__lossless_values__</code> whether the plain-value target does.</p>
+<h2 id="the-serializable-protocol">The <code>Serializable</code> protocol<a class="headerlink" href="#the-serializable-protocol" title="Permanent link">¤</a></h2>
+<p>When the object itself knows how to serialize, implement the protocol instead of a serializer:
+<code>__serialization_targets__</code>, <code>__deserialize__</code>, <code>__serialize__</code> and
+<code>__estimate_serialized_size__</code>. <code>serialize</code>, <code>deserialize</code> and <code>estimate_serialized_size</code> then
+dispatch to the object:</p>
+<p>hello
+hello
+5</p>
+<h2 id="traps-worth-knowing">Traps worth knowing<a class="headerlink" href="#traps-worth-knowing" title="Permanent link">¤</a></h2>
+<ul>
+<li><strong>A target names its format.</strong> A bare <code>File</code> hint matches nothing: ask for
+  <code>File[Literal["application/json"], TextIO]</code>, or pass a <code>file_factory</code> and let the serializer
+  pick its default format. The factory decides <em>where</em> the bytes go, the target type decides
+  <em>what</em> they are.</li>
+<li><strong>A failed encode does not truncate an existing file.</strong> Text payloads are built before the
+  target is opened, so a value the serializer rejects leaves the previous content intact.</li>
+<li><strong>Object arrays are refused for <code>.npy</code>/<code>.npz</code>.</strong> Writing them would require pickle and loading
+  them would require <code>allow_pickle=True</code>; convert the array to a concrete dtype first.</li>
+<li><strong>Losslessness is per format, not per serializer.</strong> Asking for <code>lossless=True</code> with a CSV
+  target has no candidate even though the same serializer writes lossless parquet.</li>
+<li><strong>A plain-value target can be lossy too.</strong> SQL and HTML re-render the object, so
+  <code>serialize(soup, str)</code> needs <code>lossless=False</code> exactly like the <code>.html</code> file does.</li>
+<li><strong>A missing pair raises <code>ValueError</code>.</strong> <code>serialize</code> and <code>deserialize</code> name the object type, the
+  target and the active scope in the message.</li>
+</ul>
+<p>The public functions (<code>serialize</code>, <code>deserialize</code>, <code>get_serializers</code>, <code>estimate_serialized_size</code>,
+<code>register_serializer</code>, <code>read_structure</code>, <code>write_structure</code>), the <code>Serializer</code> and <code>Serializable</code>
+protocols, the scope classes and the shipped drivers are documented in the
+<a href="ref-python-api.html#based_datatypes.serialize">API reference</a> and its submodules
+(<a href="ref-python-api.html#based_datatypes.serialize.base"><code>base</code></a>,
+<a href="ref-python-api.html#based_datatypes.serialize.common"><code>common</code></a>,
+<a href="ref-python-api.html#based_datatypes.serialize.local_fs"><code>local_fs</code></a>).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="how-to-files.html" class="md-footer__link md-footer__link--prev" aria-label="Previous: Files and directories">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Files and directories
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="how-to-descriptors.html" class="md-footer__link md-footer__link--next" aria-label="Next: Descriptors">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Descriptors
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["announce.dismiss", "content.action.edit", "content.action.view", "content.code.annotate", "content.code.copy", "content.tooltips", "navigation.footer", "navigation.path", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "navigation.top", "search.highlight", "search.suggest", "toc.follow"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+        <script src="assets/_markdown_exec_pyodide.js"></script>
+      
+        <script src="https://unpkg.com/mermaid@10.9.0/dist/mermaid.min.js"></script>
+      
+    
+  </body>
+</html>
