@@ -29,7 +29,7 @@ from identify.identify import tags_from_filename, tags_from_path
 
 from based_datatypes.descriptors import prop
 from based_datatypes.types import TypeDef
-from based_datatypes.typing import Runtyped, is_subtype
+from based_datatypes.typing import Runtyped, TypeRef, is_subtype
 
 
 def ensure_dir_exists(path: Path | str) -> Path:
@@ -98,29 +98,67 @@ R = TypeVar("R", bound=Read | Write, contravariant=True, default=Read | Write)
 class File(ABC, Runtyped, Generic[M, I, R]):
     """A generic, single file (may be within a file system or object storage)."""
 
-    _suffix: str | None = None
-    """Explicit file suffix; ``None`` derives it from the MIME type."""
-
-    @prop(cached=True, mode="dual")
-    def mimes(self) -> list[M]:
+    @prop(cached=True, mode="class")
+    @classmethod
+    def mimes(cls) -> list[M]:
         """MIME types of the file."""
-        return cast(list[M], list(self._typeref.typevar_map[M].literal_values))
+        return cast(list[M], list(cls._typeref.typevar_map[M].literal_values))
 
-    @prop(cached=True, mode="dual")
-    def io_type(self) -> TypeDef[I]:
+    @prop(cached=True, mode="class")
+    @classmethod
+    def io_type(cls) -> TypeDef[I]:
         """The IO type of the file."""
-        typeref = self._typeref.typevar_map[I]
+        typeref = cls._typeref.typevar_map[I]
         return cast(type[I], typeref.resolved_type_def)
 
-    @prop(cached=True, mode="dual")
-    def read_write(self) -> Literal["rw", "r", "w"]:
+    @prop(cached=True, mode="class")
+    @classmethod
+    def read_write(cls) -> Literal["rw", "r", "w"]:
         """The read/write mode of the file."""
-        typeref = self._typeref.typevar_map[R]
+        typeref = cls._typeref.typevar_map[R]
         return (
             "rw"
             if typeref.is_supertype_of(Read | Write)
             else "r" if typeref.is_supertype_of(Read) else "w"
         )
+
+    @staticmethod
+    def get_all_mimes(typedef: TypeDef[File]) -> list[str]:
+        """Return all MIME types of the file typedef."""
+        mimes = []
+        typeref = TypeRef(typedef)
+
+        for m in typeref.members:
+            member_typeref = TypeRef(m)
+            if M in member_typeref.typevar_map:
+                for mime in member_typeref.typevar_map[M].literal_values:
+                    if mime not in mimes:
+                        mimes.append(mime)
+
+        return mimes
+
+    mime: M | None = None
+    """Explicit MIME type."""
+
+    io: TypeDef[I] | None = None
+    """Explicit IO type."""
+
+    rw: Literal["rw", "r", "w"] | None = None
+    """Explicit read/write mode."""
+
+    _suffix: str | None = None
+    """Explicit file suffix; ``None`` derives it from the MIME type."""
+
+    def __post_init__(self) -> None:
+        """Validate the file type parameters."""
+        if self.mime is not None:
+            self._typeref.typevar_map[M] = TypeRef(Literal[self.mime])
+        if self.io is not None:
+            self._typeref.typevar_map[I] = TypeRef(self.io)
+        if self.rw is not None:
+            self._typeref.typevar_map[R] = TypeRef(
+                Read | Write if self.rw == "rw" else Read if self.rw == "r" else Write
+            )
 
     @property
     def default_mime(self) -> M:

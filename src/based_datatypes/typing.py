@@ -924,7 +924,7 @@ class TypeRef(Generic[T]):  # noqa: UP046
         self,
     ) -> dict[
         TypeVar | TypeVarTuple,
-        TypeRef,
+        TypeRef[Any],
     ]:
         """Return a mapping of type variables to their values, including those of bases."""
         typevar_map: dict[

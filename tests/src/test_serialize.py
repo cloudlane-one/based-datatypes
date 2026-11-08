@@ -26,8 +26,8 @@ from pydantic import BaseModel
 from based_datatypes.files import File, LocalDir, LocalFile, MemoryFile
 from based_datatypes.serialize import (
     INDEX_FILENAME,
+    Backend,
     Open,
-    Realm,
     SerializationTarget,
     TransportScope,
     UnsupportedTargetError,
@@ -46,6 +46,7 @@ from based_datatypes.serialize import (
 from based_datatypes.serialize import common as common_module
 from based_datatypes.serialize.base import (
     JSONDict,
+    Memory,
     SerializedDict,
     SerializedValue,
     Serializer,
@@ -275,7 +276,7 @@ class TestJSONSerializer:
         driver = common_module.JSONSerializer()
 
         assert all(not target.lossy for target in driver.serialization_targets)
-        assert target_mimes(driver.serialization_targets[1].type) == ("application/json",)
+        assert target_mimes(driver.serialization_targets[1].tgt_type) == ("application/json",)
 
     def test_estimate_uses_the_target_format(self, payload: SerializedDict) -> None:
         """YAML and JSON estimates differ, so the format is taken into account."""
@@ -404,7 +405,7 @@ class TestPydSerializer:
         file_targets = [
             target
             for target in common_module.PydSerializer().serialization_targets
-            if target_mimes(target.type)
+            if target_mimes(target.tgt_type)
         ]
 
         assert file_targets
@@ -469,19 +470,6 @@ class TestPdSerializer:
 
         assert get_serializers(pd.DataFrame, [csv_target], allow_lossy=False) == []
         assert get_serializers(pd.DataFrame, [csv_target], allow_lossy=True) != []
-
-    def test_unsupported_mime_on_write(self, workdir: Path, frame: pd.DataFrame) -> None:
-        """A target format the driver does not know is refused before the file is created."""
-        target = local_file(workdir, "frame", "application/octet-stream", binary=True)
-
-        with pytest.raises(ValueError, match="Unsupported MIME type"):
-            common_module.PdSerializer().serialize(
-                frame,
-                File[Literal["application/octet-stream"], BinaryIO],
-                file_factory=lambda: target,
-            )
-
-        assert not target.path.exists()
 
     def test_unsupported_mime_on_read(self, workdir: Path) -> None:
         """A source format the driver does not know is refused."""
@@ -564,17 +552,6 @@ class TestPlSerializer:
             "application/vnd.apache.parquet"
         )
 
-    def test_unsupported_mime_on_write(self, workdir: Path) -> None:
-        """A target format the driver does not know is refused before the file is created."""
-        target = local_file(workdir, "frame", "application/octet-stream", binary=True)
-
-        with pytest.raises(ValueError, match="Unsupported MIME type"):
-            common_module.PlSerializer().serialize(
-                pl.DataFrame({"x": [1]}),
-                File[Literal["application/octet-stream"], BinaryIO],
-                file_factory=lambda: target,
-            )
-
     def test_unsupported_mime_on_read(self, workdir: Path) -> None:
         """A source format the driver does not know is refused."""
         target = local_file(workdir, "frame", "application/octet-stream", binary=True)
@@ -653,19 +630,6 @@ class TestNpSerializer:
         assert estimate_serialized_size(array, File[Literal["application/x-npz"], BinaryIO]) == (
             array.nbytes
         )
-
-    def test_unsupported_mime_on_write(self, workdir: Path) -> None:
-        """A target format the driver does not know is refused before the file is created."""
-        target = local_file(workdir, "array", "application/octet-stream", binary=True)
-
-        with pytest.raises(ValueError, match="Unsupported MIME type"):
-            common_module.NpSerializer().serialize(
-                np.array([1.0]),
-                File[Literal["application/octet-stream"], BinaryIO],
-                file_factory=lambda: target,
-            )
-
-        assert not target.path.exists()
 
     def test_unsupported_mime_on_read(self, workdir: Path) -> None:
         """A source format the driver does not know is refused."""
@@ -801,23 +765,12 @@ class TestImageSerializer:
         """PNG is lossless while JPEG is not, from the same driver."""
         driver = common_module.ImageSerializer()
         lossless = {
-            target_mimes(target.type)[0]: not target.lossy
+            target_mimes(target.tgt_type)[0]: not target.lossy
             for target in driver.serialization_targets
         }
 
         assert lossless["image/png"] is True
         assert lossless["image/jpeg"] is False
-
-    def test_unsupported_mime_on_write(self, workdir: Path) -> None:
-        """A MIME type without a PIL encoder is refused."""
-        target = local_file(workdir, "image", "image/svg+xml", binary=True)
-
-        with pytest.raises(ValueError, match="Unsupported image MIME type"):
-            common_module.ImageSerializer().serialize(
-                Image.new("RGB", (2, 2)),
-                File[Literal["image/svg+xml"], BinaryIO],
-                file_factory=lambda: target,
-            )
 
     def test_estimate_is_the_pixel_payload(self) -> None:
         """The estimate counts every band of every pixel."""
@@ -960,20 +913,20 @@ class TestSelection:
 
     def test_a_broader_declaration_serves_a_narrower_request(self) -> None:
         """A declaration covers its own scope and every scope below it."""
-        target = SerializationTarget(type=str, scope=PrivateScope, lossy=False)
+        target = SerializationTarget(tgt_type=str, scope=PrivateScope, lossy=False)
 
         assert SerializationTarget.match([target], [str], PrivateNarrowScope(), False) != []
 
     def test_a_narrower_declaration_does_not_serve_a_broader_request(self) -> None:
         """A declaration for a narrower scope cannot carry a broader request."""
-        target = SerializationTarget(type=str, scope=PrivateNarrowScope, lossy=False)
+        target = SerializationTarget(tgt_type=str, scope=PrivateNarrowScope, lossy=False)
 
         assert SerializationTarget.match([target], [str], PrivateScope(), False) == []
 
     def test_generated_targets_keep_the_declared_order(self) -> None:
         """The union order of the declared formats survives reflection."""
         mimes = [
-            target_mimes(target.type)
+            target_mimes(target.tgt_type)
             for target in common_module.PdSerializer().serialization_targets
         ]
 
@@ -1034,8 +987,8 @@ class TestBase:
 
     def test_serialization_context_restores_the_previous_value(self) -> None:
         """The context manager restores the ambient context on exit."""
-        target = SerializationTarget(type=dict, scope=Open(), lossy=False)
-        realm = Realm()
+        target = SerializationTarget(tgt_type=dict, scope=Open(), lossy=False)
+        realm = Memory()
         before = current_ser_ctx.get()
 
         with serialization_context(target, realm):
@@ -1046,8 +999,8 @@ class TestBase:
     def test_target_match_filters_by_losslessness(self) -> None:
         """Lossy targets are dropped when only lossless ones are accepted."""
         targets = [
-            SerializationTarget(type=str, scope=Open(), lossy=False),
-            SerializationTarget(type=list[float], scope=Open(), lossy=True),
+            SerializationTarget(tgt_type=str, scope=Open(), lossy=False),
+            SerializationTarget(tgt_type=list[float], scope=Open(), lossy=True),
         ]
 
         assert len(SerializationTarget.match(targets, None, None, False)) == 1
@@ -1368,8 +1321,7 @@ class ScopedSerializer(Serializer[float, str, PrivateScope]):
         allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: Any = None,
-        realm: Realm | None = None,
-        file_factory: Any = None,
+        backend: Backend = Memory(),
     ) -> str:
         """Return the number as text."""
         return repr(instance)
@@ -1378,7 +1330,6 @@ class ScopedSerializer(Serializer[float, str, PrivateScope]):
         self,
         source: str,
         scope: TransportScope = Open(),
-        realm: Realm | None = None,
         annotation: Any = None,
     ) -> float:
         """Read the number back."""
@@ -1417,8 +1368,7 @@ class ScopeRecordingSerializer(Serializer[float, str, Open]):
         allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: Any = None,
-        realm: Realm | None = None,
-        file_factory: Any = None,
+        backend: Backend = Memory(),
     ) -> str:
         """Record the scope and return the number as text."""
         self.seen.append((scope, current_ser_ctx.get()[0].scope))
@@ -1428,7 +1378,6 @@ class ScopeRecordingSerializer(Serializer[float, str, Open]):
         self,
         source: str,
         scope: TransportScope = Open(),
-        realm: Realm | None = None,
         annotation: Any = None,
     ) -> float:
         """Read the number back."""
@@ -1445,8 +1394,7 @@ class RefusingSerializer(Serializer[float, str, Open]):
         allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: Any = None,
-        realm: Realm | None = None,
-        file_factory: Any = None,
+        backend: Backend = Memory(),
     ) -> str:
         """Refuse the target."""
         raise UnsupportedTargetError("refused: this driver cannot fulfil the target")
@@ -1455,7 +1403,6 @@ class RefusingSerializer(Serializer[float, str, Open]):
         self,
         source: str,
         scope: TransportScope = Open(),
-        realm: Realm | None = None,
         annotation: Any = None,
     ) -> float:
         """Read the number back."""
@@ -1571,7 +1518,9 @@ class Document:
     def __serialization_targets__(cls) -> list[SerializationTarget[Any, Open, Any]]:
         """Only plain text files are supported."""
         return [
-            SerializationTarget(type=File[Literal["text/plain"], TextIO], scope=Open(), lossy=False)
+            SerializationTarget(
+                tgt_type=File[Literal["text/plain"], TextIO], scope=Open(), lossy=False
+            )
         ]
 
     @classmethod
@@ -1579,7 +1528,7 @@ class Document:
         cls,
         source: Any,
         scope: TransportScope = Open(),
-        realm: Realm | None = None,
+        realm: Backend | None = None,
         annotation: Any = None,
     ) -> Document:
         """Read the text from the source file."""
@@ -1592,7 +1541,7 @@ class Document:
         allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: Any = None,
-        realm: Realm | None = None,
+        realm: Backend | None = None,
         file_factory: Any = None,
     ) -> File:
         """Write the text into the target file."""
@@ -1630,11 +1579,6 @@ class TestCoverageDetails:
         """A value that is neither a file nor text is refused."""
         with pytest.raises(TypeError, match="Expected a text file or a string"):
             common_module._read_text(cast(Any, 1))
-
-    def test_target_io_defaults_to_text(self) -> None:
-        """A target without an IO type is treated as text."""
-        assert common_module._target_io(None) is TextIO
-        assert common_module._target_io(str) is TextIO
 
     def test_bare_file_target_uses_the_default_format(self, payload: SerializedDict) -> None:
         """A file target without a MIME type falls back to the declared format."""

@@ -21,137 +21,32 @@ import polars as pl
 import sqlparse
 import yaml
 
-from based_datatypes.files import File, MemoryFile
-from based_datatypes.types import TypeDef
-from based_datatypes.typing import TypeRef, is_subtype
+from based_datatypes.files import File
+from based_datatypes.types import DataclassInstance, TypeDef
+from based_datatypes.typing import TypeRef, has_type, is_subtype
 
 from .base import (
+    Backend,
     JSONDict,
     JSONScalar,
+    JSONValue,
+    Memory,
     Open,
-    Realm,
     Serialized,
     SerializedDict,
     SerializedValue,
     Serializer,
     TransportScope,
     UnsupportedTargetError,
-    target_mimes,
+    register_serializer,
+    serialize,
 )
-
-common_serializers: list[Serializer] = []
-"""The serializers registered for the types this library supports out of the box."""
 
 V = TypeVar("V")
 T = TypeVar("T", bound=Serialized)
 
 
-def check_type_and_cast[T](
-    obj: Any, annotation: TypeDef[Any] | None = None
-) -> T:  # pyright: ignore[reportInvalidTypeVarUse]
-    """Check if the object matches the annotation type and cast it."""
-    if annotation is not None and not TypeRef(annotation).validate(obj):
-        raise TypeError(f"Object does not match expected type: {annotation}")
-    return cast(T, obj)
-
-
-def _encoded_size(text: str) -> int:
-    """Return the UTF-8 encoded size of ``text``."""
-    return len(text.encode("utf-8"))
-
-
-def _serialize_json(instance: Any, mime: str) -> str:
-    """Serialize JSON-compatible data for the given MIME type.
-
-    The payload is built before the target is opened, so a value the encoder
-    rejects cannot truncate an existing file.
-
-    Args:
-        instance: The data to serialize.
-        mime: The target MIME type, ``application/yaml`` or JSON otherwise.
-
-    Returns:
-        The serialized text.
-    """
-    if mime == "application/yaml":
-        return yaml.safe_dump(instance, allow_unicode=True)
-
-    return json.dumps(instance, indent=2)
-
-
-def _sample_step(total: int, limit: int = 100) -> int:
-    """Return a stride that yields at most ``limit`` evenly spread rows.
-
-    Sampling by stride rather than by head avoids a systematic bias on sorted
-    data, where the first rows are unrepresentatively narrow.
-
-    Args:
-        total: The number of rows in the frame.
-        limit: The maximum number of rows to sample.
-
-    Returns:
-        The stride, at least ``1``.
-    """
-    return max(total // limit, 1)
-
-
-def _json_estimate(instance: Any, mime: str) -> int:
-    """Measure a JSON or YAML payload cheaply.
-
-    ``json.dumps`` is implemented in C and beats any Python size walk of the same
-    data, so the JSON size is measured directly instead of estimated. YAML
-    dumping is pure Python and about two orders of magnitude slower, while its
-    output stays close to the compact JSON encoding, so a YAML target is measured
-    as that compact JSON payload — a rough upper bound at C speed.
-
-    Args:
-        instance: The data to measure.
-        mime: The target MIME type, ``application/yaml`` or JSON otherwise.
-
-    Returns:
-        The estimated encoded size in bytes.
-    """
-    if mime == "application/yaml":
-        return _encoded_size(json.dumps(instance))
-
-    return _encoded_size(json.dumps(instance, indent=2))
-
-
-# Inspecting targets
-
-
-def _target_io(hint: Any) -> TypeDef[Any]:
-    """Return the IO type a file target declares, defaulting to text."""
-    if hint is not None:
-        ref = hint if isinstance(hint, TypeRef) else TypeRef(hint)
-
-        for var, value in ref.typevar_map.items():
-            if var.__name__ == "I":
-                return value.resolved_type_def
-
-    return TextIO
-
-
-def _is_file_hint(hint: Any) -> bool:
-    """Whether a target type asks for a file."""
-    if hint is None:
-        return False
-
-    ref = hint if isinstance(hint, TypeRef) else TypeRef(hint)
-    origin = ref.origin
-
-    return isinstance(origin, type) and issubclass(origin, File)
-
-
-def _memory_file(mime: str = "text/plain", io: TypeDef[Any] = TextIO) -> File:
-    """Create an in-memory file with the given MIME type and IO type."""
-    binary = not is_subtype(io, TextIO)
-    file_type = cast(Any, MemoryFile)[Literal[cast(Any, mime)], BinaryIO if binary else TextIO]
-
-    return cast(File, file_type())
-
-
-# Reading and writing payloads
+# Helper functions:
 
 
 def _read_text(source: SerializedValue) -> str:
@@ -166,13 +61,13 @@ def _read_text(source: SerializedValue) -> str:
     raise TypeError(f"Expected a text file or a string, got {type(source).__name__}.")
 
 
-def _write_text(target: File, text: str) -> None:
+def _write_text(target: File[Any, Any, Any], text: str) -> None:
     """Write text into a file target."""
     with target.open("w") as stream:
         stream.write(text)
 
 
-def _read_value(source: SerializedValue) -> SerializedValue:
+def _read_json_value(source: JSONValue | JSONFile) -> JSONValue:
     """Read JSON-shaped data from a file, or pass a value through unchanged."""
     if not isinstance(source, File):
         return source
@@ -180,9 +75,9 @@ def _read_value(source: SerializedValue) -> SerializedValue:
     with source.open("r") as stream:
         if source.default_mime == "application/yaml":
             # ``safe_load`` refuses to construct arbitrary Python objects.
-            return cast(SerializedValue, yaml.safe_load(stream))
+            return cast(JSONValue, yaml.safe_load(stream))
 
-        return cast(SerializedValue, json.load(stream))
+        return cast(JSONDict, json.load(stream))
 
 
 def _require_file(source: SerializedValue, serializer: str) -> File:
@@ -193,176 +88,6 @@ def _require_file(source: SerializedValue, serializer: str) -> File:
     raise TypeError(f"{serializer} deserializes from a file, got {type(source).__name__}.")
 
 
-# Base classes for the common serializers
-
-
-class CommonSerializer(Serializer[V, T]):
-    """Shared target handling for the common serializers.
-
-    A serializer declares its formats through the type parameters of its class: a
-    :class:`File` hint is written to, and a JSON-supported value (``str``,
-    ``list[float]``, a ``dict``, ...) is returned as it is. Without a requested
-    target type the first declared format is used, and a file format is delivered
-    as an in-memory :class:`MemoryFile`.
-    """
-
-    def _default_target(self) -> File | None:
-        """Return an in-memory file of the preferred file format, if there is one."""
-        for target in self.serialization_targets:
-            mimes = target_mimes(target.type)
-            if len(mimes) > 0:
-                return _memory_file(mimes[0], _target_io(target.type))
-
-        return None
-
-    def _resolve_target(
-        self, target_type: TypeDef[Any] | None, file_factory: Callable[[], File] | None
-    ) -> File | None:
-        """Resolve the file a serialization writes to, if the target is a file.
-
-        Args:
-            target_type: The requested target type, or ``None`` for the default.
-            file_factory: An optional factory that creates the file to write to.
-
-        Returns:
-            The file to write to, or ``None`` when the target is not a file and the
-            serialized value is returned directly.
-
-        Raises:
-            ValueError: If the target is a file that cannot be created here.
-        """
-        if file_factory is not None:
-            return file_factory()
-
-        if target_type is None:
-            return self._default_target()
-
-        if not _is_file_hint(target_type):
-            return None
-
-        origin = TypeRef(target_type).origin
-
-        if isinstance(origin, type) and origin is not File and not issubclass(origin, MemoryFile):
-            raise ValueError(
-                f"{type(self).__name__} cannot create a {origin.__name__} target; pass a "
-                "file_factory that returns the file to write to."
-            )
-
-        mimes = target_mimes(target_type)
-
-        if len(mimes) == 0:
-            default = self._default_target()
-            if default is None:
-                raise ValueError(f"{type(self).__name__} has no file format to serialize to.")
-            return default
-
-        return _memory_file(mimes[0], _target_io(target_type))
-
-    def _file_target(
-        self, target_type: TypeDef[Any] | None, file_factory: Callable[[], File] | None
-    ) -> File:
-        """Resolve the file a serialization writes to, or refuse a non-file target."""
-        target = self._resolve_target(target_type, file_factory)
-
-        if target is None:
-            raise ValueError(
-                f"{type(self).__name__} can only serialize to a file; "
-                f"{target_type!r} is not a file target."
-            )
-
-        return target
-
-
-class PrimitiveSerializer(CommonSerializer[V, T]):
-    """Shared handling for serializers that map onto a JSON-supported value."""
-
-    @abstractmethod
-    def _encode(self, instance: V) -> T:
-        """Convert the object into its primitive representation."""
-
-    @abstractmethod
-    def _decode(self, source: T, annotation: TypeDef[Any] | None = None) -> V:
-        """Restore the object from its primitive representation."""
-
-    @override
-    def serialize(
-        self,
-        instance: V,
-        target_type: TypeDef[Any] | None = None,
-        allow_lossy: bool = False,
-        scope: TransportScope = Open(),
-        annotation: TypeDef[Any] | None = None,
-        realm: Realm | None = None,
-        file_factory: Callable[[], File] | None = None,
-    ) -> T:
-        """Serialize an object to a JSON-supported value.
-
-        Args:
-            instance: The object to serialize.
-            target_type: The target type or format to serialize to.
-            allow_lossy: Whether to require a lossless serialization.
-            scope: The serialization scope to use for the serialization.
-            annotation: The declared type of the object, if any.
-            realm: The realm to serialize to.
-            file_factory: Unused; these serializers never write files.
-
-        Returns:
-            The serialized value.
-
-        Raises:
-            ValueError: If a file target is requested.
-        """
-        if file_factory is not None or _is_file_hint(target_type):
-            raise ValueError(
-                f"{type(self).__name__} serializes to a JSON value, not to a file; embed "
-                "the value in a dict or list to write it to a file."
-            )
-
-        return self._encode(instance)
-
-    @override
-    def deserialize(
-        self,
-        source: T,
-        scope: TransportScope = Open(),
-        realm: Realm | None = None,
-        annotation: TypeDef[Any] | None = None,
-    ) -> V:
-        """Deserialize an object from a JSON-supported value.
-
-        Args:
-            source: The value to deserialize from.
-            scope: The serialization scope to use for the deserialization.
-            realm: The realm to deserialize from.
-            annotation: The declared type of the object, if any.
-
-        Returns:
-            An instance of the object, deserialized from the value.
-
-        Raises:
-            TypeError: If the source is a file.
-        """
-        if isinstance(source, File):
-            raise TypeError(
-                f"{type(self).__name__} deserializes from a JSON value, "
-                f"got a {type(source).__name__}."
-            )
-
-        return check_type_and_cast(self._decode(source, annotation), annotation)
-
-    @override
-    def estimate_serialized_size(
-        self,
-        instance: V,
-        target_type: TypeDef[Any] | None = None,
-        allow_lossy: bool = False,
-        scope: TransportScope = Open(),
-        annotation: TypeDef[Any] | None = None,
-    ) -> int:
-        """Measure the encoded value."""
-        return _encoded_size(json.dumps(self._encode(instance)))
-
-
 # JSON / YAML
 
 type JSONFile = (
@@ -370,28 +95,11 @@ type JSONFile = (
 )
 
 
-class DataclassValue(ABC):
-    """Structural marker that matches every dataclass instance.
-
-    A dataclass shares no method that a protocol could key on, so the marker
-    uses the class hook instead of inheritance: any class carrying
-    ``__dataclass_fields__`` counts as a subclass.
-    """
-
-    @classmethod
-    def __subclasshook__(cls, subclass: type) -> bool:
-        """Treat every dataclass as a subclass of this marker."""
-        if cls is DataclassValue:
-            return hasattr(subclass, "__dataclass_fields__")
-
-        return NotImplemented
-
-
-type Container = Mapping[Any, Any] | Sequence[Any] | Set[Any] | DataclassValue
+type Container = Mapping[Any, Any] | Sequence[Any] | Set[Any] | DataclassInstance
 """Everything the container serializer handles as a whole."""
 
 
-def _container_payload(value: Any, scope: TransportScope, realm: Realm | None) -> SerializedValue:
+def _container_payload(value: Any, scope: TransportScope, realm: Backend | None) -> SerializedValue:
     """Turn one value into the JSON-shaped payload a container target can carry.
 
     Scalar values, files and containers are handled here; anything else is
@@ -430,9 +138,6 @@ def _container_payload(value: Any, scope: TransportScope, realm: Realm | None) -
             for field in fields(value)
         }
 
-    # Imported here because the entry points of the package import this module.
-    from . import serialize
-
     converted = serialize(value, scope=scope, realm=realm)
     if converted is value:
         raise UnsupportedTargetError(
@@ -442,7 +147,7 @@ def _container_payload(value: Any, scope: TransportScope, realm: Realm | None) -
     return _container_payload(converted, scope, realm)
 
 
-class JSONSerializer(CommonSerializer[JSONDict, SerializedDict | JSONFile]):
+class JSONSerializer(Serializer[JSONDict, JSONDict | JSONFile, Open]):
     """Serializer for JSON-shaped dictionaries."""
 
     __lossless_mimes__ = frozenset({"application/json", "application/yaml"})
@@ -451,65 +156,41 @@ class JSONSerializer(CommonSerializer[JSONDict, SerializedDict | JSONFile]):
     def serialize(
         self,
         instance: JSONDict,
-        target_type: TypeDef[Any] | None = None,
+        target_type: TypeDef[SerializedDict | JSONFile] | None = None,
         allow_lossy: bool = False,
         scope: TransportScope = Open(),
-        annotation: TypeDef[Any] | None = None,
-        realm: Realm | None = None,
-        file_factory: Callable[[], File] | None = None,
+        annotation: TypeDef[JSONDict] | None = None,
+        backend: Backend = Memory(),
     ) -> SerializedDict | JSONFile:
-        """Serialize a dictionary to a JSON or YAML file, or return it as it is.
-
-        Args:
-            instance: The dictionary to serialize.
-            target_type: The target type or format to serialize to.
-            allow_lossy: Whether to require a lossless serialization.
-            scope: The serialization scope to use for the serialization.
-            annotation: The declared type of the object, if any.
-            realm: The realm to serialize to.
-            file_factory: An optional factory function to create new files.
-
-        Returns:
-            The written file, or the dictionary when a dict target was requested.
-        """
-        target = self._resolve_target(target_type, file_factory)
-
-        if target is None:
+        if target_type is None or not is_subtype(target_type, File):
             return cast(SerializedDict, instance)
 
+        target = backend.get_writable_file(target_type)
         _write_text(target, _serialize_json(instance, target.default_mime))
 
-        return target
+        return cast(SerializedDict | JSONFile, target)
 
     @override
     def deserialize(
         self,
-        source: SerializedDict | JSONFile,
+        source: JSONDict | JSONFile,
+        annotation: TypeDef[JSONDict] | None = None,
         scope: TransportScope = Open(),
-        realm: Realm | None = None,
-        annotation: TypeDef[Any] | None = None,
     ) -> JSONDict:
-        """Deserialize a dictionary from a JSON or YAML file, or from a dictionary.
-
-        Args:
-            source: The file or dictionary to deserialize from.
-            scope: The serialization scope to use for the deserialization.
-            realm: The realm to deserialize from.
-            annotation: The declared type of the object, if any.
-
-        Returns:
-            The deserialized dictionary.
-        """
-        return check_type_and_cast(_read_value(source), annotation)
+        parsed = _read_json_value(source)
+        assert has_type(
+            parsed, JSONDict
+        ), f"Expected a JSON-shaped dictionary, got {type(parsed).__name__}."
+        return parsed
 
     @override
     def estimate_serialized_size(
         self,
         instance: JSONDict,
-        target_type: TypeDef[Any] | None = None,
+        target_type: TypeDef[SerializedDict | JSONFile] | None = None,
         allow_lossy: bool = False,
         scope: TransportScope = Open(),
-        annotation: TypeDef[Any] | None = None,
+        annotation: TypeDef[JSONDict] | None = None,
     ) -> int:
         """Measure the encoded dictionary.
 
@@ -522,7 +203,7 @@ class JSONSerializer(CommonSerializer[JSONDict, SerializedDict | JSONFile]):
         return _json_estimate(instance, mimes[0] if len(mimes) > 0 else "application/json")
 
 
-class ContainerSerializer(CommonSerializer[Container, SerializedDict | list[SerializedValue]]):
+class ContainerSerializer(Serializer[Container, SerializedDict | list[SerializedValue], Open]):
     """Serializer for mappings, sequences, sets and dataclass instances.
 
     Every item is serialized on its own, so a container of datetimes, UUIDs,
@@ -541,28 +222,9 @@ class ContainerSerializer(CommonSerializer[Container, SerializedDict | list[Seri
         allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
-        realm: Realm | None = None,
-        file_factory: Callable[[], File] | None = None,
+        backend: Backend = Memory(),
     ) -> SerializedDict | list[SerializedValue]:
-        """Serialize a container to the JSON-shaped payload it reduces to.
-
-        Args:
-            instance: The container to serialize.
-            target_type: The target type or format to serialize to.
-            allow_lossy: Whether to require a lossless serialization.
-            scope: The serialization scope to use for the serialization.
-            annotation: The declared type of the object, if any.
-            realm: The realm to serialize to.
-            file_factory: Unused; this serializer produces values, not files.
-
-        Returns:
-            The dictionary or list the container reduces to.
-
-        Raises:
-            UnsupportedTargetError: If a file target is requested, which this driver
-                does not produce.
-        """
-        if file_factory is not None or _is_file_hint(target_type):
+        if _is_file_hint(target_type):
             raise UnsupportedTargetError(
                 f"{type(self).__name__} reduces a container to a value, not to a file; "
                 "serialize the payload to a file target through its own serializer."
@@ -570,7 +232,7 @@ class ContainerSerializer(CommonSerializer[Container, SerializedDict | list[Seri
 
         return cast(
             SerializedDict | list[SerializedValue],
-            _container_payload(instance, scope, realm),
+            _container_payload(instance, scope, backend),
         )
 
     @override
@@ -578,20 +240,8 @@ class ContainerSerializer(CommonSerializer[Container, SerializedDict | list[Seri
         self,
         source: SerializedDict | list[SerializedValue],
         scope: TransportScope = Open(),
-        realm: Realm | None = None,
         annotation: TypeDef[Any] | None = None,
     ) -> Any:
-        """Deserialize a container from the value it was reduced to.
-
-        Args:
-            source: The dictionary or list to read.
-            scope: The serialization scope to use for the deserialization.
-            realm: The realm to deserialize from.
-            annotation: The declared type of the object, if any.
-
-        Returns:
-            The JSON-shaped payload the source holds.
-        """
         return check_type_and_cast(source, annotation)
 
     @override
@@ -628,7 +278,7 @@ def _serialize_xml(instance: xml.ElementTree) -> str:
     return xml.tostring(root, encoding="unicode")
 
 
-class XMLSerializer(CommonSerializer[xml.ElementTree, str | XMLFile]):
+class XMLSerializer(Serializer[xml.ElementTree, str | XMLFile, Open]):
     """Serializer for XML element trees."""
 
     __lossless_mimes__ = frozenset({"application/xml", "text/xml"})
@@ -641,23 +291,8 @@ class XMLSerializer(CommonSerializer[xml.ElementTree, str | XMLFile]):
         allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
-        realm: Realm | None = None,
-        file_factory: Callable[[], File] | None = None,
+        backend: Backend = Memory(),
     ) -> str | XMLFile:
-        """Serialize a tree to XML text or to an XML file.
-
-        Args:
-            instance: The tree to serialize.
-            target_type: The target type or format to serialize to.
-            allow_lossy: Whether to require a lossless serialization.
-            scope: The serialization scope to use for the serialization.
-            annotation: The declared type of the object, if any.
-            realm: The realm to serialize to.
-            file_factory: An optional factory function to create new files.
-
-        Returns:
-            The written file, or the XML text when a text target was requested.
-        """
         text = _serialize_xml(instance)
         target = self._resolve_target(target_type, file_factory)
 
@@ -673,20 +308,8 @@ class XMLSerializer(CommonSerializer[xml.ElementTree, str | XMLFile]):
         self,
         source: str | XMLFile,
         scope: TransportScope = Open(),
-        realm: Realm | None = None,
         annotation: TypeDef[Any] | None = None,
     ) -> xml.ElementTree:
-        """Deserialize a tree from XML text or from an XML file.
-
-        Args:
-            source: The file or text to deserialize from.
-            scope: The serialization scope to use for the deserialization.
-            realm: The realm to deserialize from.
-            annotation: The declared type of the object, if any.
-
-        Returns:
-            The deserialized tree.
-        """
         # The default builder drops comments and processing instructions, which
         # would break the lossless round trip this serializer declares.
         parser = xml.XMLParser(target=xml.TreeBuilder(insert_comments=True, insert_pis=True))
@@ -709,14 +332,14 @@ class XMLSerializer(CommonSerializer[xml.ElementTree, str | XMLFile]):
         walking the elements in Python — which would also under-count the markup
         the serializer emits.
         """
-        return _encoded_size(_serialize_xml(instance))
+        return len(_serialize_xml(instance).encode("utf-8"))
 
 
 # Pydantic models
 try:
     import pydantic as pyd
 
-    class PydSerializer(CommonSerializer[pyd.BaseModel, SerializedDict | JSONFile]):
+    class PydSerializer(Serializer[pyd.BaseModel, SerializedDict | JSONFile, Open]):
         """Serializer for Pydantic models."""
 
         @override
@@ -727,8 +350,7 @@ try:
             allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
-            realm: Realm | None = None,
-            file_factory: Callable[[], File] | None = None,
+            backend: Backend = Memory(),
         ) -> SerializedDict | JSONFile:
             """Serialize a model to a JSON or YAML file, or return its dump.
 
@@ -743,8 +365,7 @@ try:
                 allow_lossy: Whether to require a lossless serialization.
                 scope: The serialization scope to use for the serialization.
                 annotation: The declared type of the object, if any.
-                realm: The realm to serialize to.
-                file_factory: An optional factory function to create new files.
+                backend: The backend to serialize to.
 
             Returns:
                 The written file, or the model dump when a dict target was requested.
@@ -764,27 +385,12 @@ try:
             self,
             source: SerializedDict | JSONFile,
             scope: TransportScope = Open(),
-            realm: Realm | None = None,
             annotation: TypeDef[Any] | None = None,
         ) -> pyd.BaseModel:
-            """Deserialize a model from a JSON or YAML file, or from its dump.
-
-            Args:
-                source: The file or dictionary to deserialize from.
-                scope: The serialization scope to use for the deserialization.
-                realm: The realm to deserialize from.
-                annotation: The model type to validate against.
-
-            Returns:
-                The deserialized model.
-
-            Raises:
-                ValueError: If no annotation is given.
-            """
             if annotation is None:
                 raise ValueError("Deserializing a Pydantic model requires the model as annotation.")
 
-            return pyd.TypeAdapter(annotation).validate_python(_read_value(source))
+            return pyd.TypeAdapter(annotation).validate_python(_read_json_value(source))
 
         @override
         def estimate_serialized_size(
@@ -826,7 +432,7 @@ type DfFile = (
 try:
     import pandas as pd
 
-    class PdSerializer(CommonSerializer[pd.DataFrame, DfFile]):
+    class PdSerializer(Serializer[pd.DataFrame, DfFile, Open]):
         """Serializer for Pandas DataFrames."""
 
         __lossless_mimes__ = frozenset({"application/vnd.apache.parquet"})
@@ -839,26 +445,8 @@ try:
             allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
-            realm: Realm | None = None,
-            file_factory: Callable[[], File] | None = None,
+            backend: Backend = Memory(),
         ) -> DfFile:
-            """Serialize a DataFrame to Parquet, Excel or CSV.
-
-            Args:
-                instance: The frame to serialize.
-                target_type: The target type or format to serialize to.
-                allow_lossy: Whether to require a lossless serialization.
-                scope: The serialization scope to use for the serialization.
-                annotation: The declared type of the object, if any.
-                realm: The realm to serialize to.
-                file_factory: An optional factory function to create new files.
-
-            Returns:
-                The written file.
-
-            Raises:
-                ValueError: If the target MIME type is not supported.
-            """
             target = self._file_target(target_type, file_factory)
             mime = target.default_mime
 
@@ -886,23 +474,8 @@ try:
             self,
             source: DfFile,
             scope: TransportScope = Open(),
-            realm: Realm | None = None,
             annotation: TypeDef[Any] | None = None,
         ) -> pd.DataFrame:
-            """Deserialize a DataFrame from Parquet, Excel or CSV.
-
-            Args:
-                source: The file to deserialize from.
-                scope: The serialization scope to use for the deserialization.
-                realm: The realm to deserialize from.
-                annotation: The declared type of the object, if any.
-
-            Returns:
-                The deserialized frame.
-
-            Raises:
-                ValueError: If the source MIME type is not supported.
-            """
             file = _require_file(source, type(self).__name__)
 
             with file.open("r") as stream:
@@ -932,8 +505,8 @@ try:
                 if total == 0:
                     return 0
 
-                sample = instance.iloc[:: _sample_step(total)]
-                return int(_encoded_size(sample.to_csv(index=False)) * total / len(sample))
+                sample = instance.iloc[:: max(total // 100, 1)]
+                return int(len(sample.to_csv(index=False).encode("utf-8")) * total / len(sample))
 
             return int(instance.memory_usage(deep=True).sum())
 
@@ -945,7 +518,7 @@ except ImportError:
 # Polars
 
 
-class PlSerializer(CommonSerializer[pl.DataFrame, DfFile]):
+class PlSerializer(Serializer[pl.DataFrame, DfFile, Open]):
     """Serializer for Polars DataFrames."""
 
     __lossless_mimes__ = frozenset({"application/vnd.apache.parquet"})
@@ -958,26 +531,8 @@ class PlSerializer(CommonSerializer[pl.DataFrame, DfFile]):
         allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
-        realm: Realm | None = None,
-        file_factory: Callable[[], File] | None = None,
+        backend: Backend = Memory(),
     ) -> DfFile:
-        """Serialize a DataFrame to Parquet, Excel or CSV.
-
-        Args:
-            instance: The frame to serialize.
-            target_type: The target type or format to serialize to.
-            allow_lossy: Whether to require a lossless serialization.
-            scope: The serialization scope to use for the serialization.
-            annotation: The declared type of the object, if any.
-            realm: The realm to serialize to.
-            file_factory: An optional factory function to create new files.
-
-        Returns:
-            The written file.
-
-        Raises:
-            ValueError: If the target MIME type is not supported.
-        """
         target = self._file_target(target_type, file_factory)
         mime = target.default_mime
 
@@ -1001,23 +556,8 @@ class PlSerializer(CommonSerializer[pl.DataFrame, DfFile]):
         self,
         source: DfFile,
         scope: TransportScope = Open(),
-        realm: Realm | None = None,
         annotation: TypeDef[Any] | None = None,
     ) -> pl.DataFrame:
-        """Deserialize a DataFrame from Parquet, Excel or CSV.
-
-        Args:
-            source: The file to deserialize from.
-            scope: The serialization scope to use for the deserialization.
-            realm: The realm to deserialize from.
-            annotation: The declared type of the object, if any.
-
-        Returns:
-            The deserialized frame.
-
-        Raises:
-            ValueError: If the source MIME type is not supported.
-        """
         file = _require_file(source, type(self).__name__)
 
         with file.open("r") as stream:
@@ -1047,8 +587,8 @@ class PlSerializer(CommonSerializer[pl.DataFrame, DfFile]):
             if total == 0:
                 return 0
 
-            sample = instance.gather_every(_sample_step(total))
-            return int(_encoded_size(sample.write_csv()) * total / sample.height)
+            sample = instance.gather_every(max(total // 100, 1))
+            return int(len(sample.write_csv().encode("utf-8")) * total / sample.height)
 
         return int(instance.estimated_size())
 
@@ -1083,7 +623,7 @@ try:
                 "concrete dtype first."
             )
 
-    class NpSerializer(CommonSerializer[np.ndarray, NpFile]):
+    class NpSerializer(Serializer[np.ndarray, NpFile, Open]):
         """Serializer for NumPy arrays."""
 
         __lossless_mimes__ = frozenset({"application/x-npy", "application/x-npz"})
@@ -1096,27 +636,8 @@ try:
             allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
-            realm: Realm | None = None,
-            file_factory: Callable[[], File] | None = None,
+            backend: Backend = Memory(),
         ) -> NpFile:
-            """Serialize an array to ``.npy``, ``.npz`` or CSV.
-
-            Args:
-                instance: The array to serialize.
-                target_type: The target type or format to serialize to.
-                allow_lossy: Whether to require a lossless serialization.
-                scope: The serialization scope to use for the serialization.
-                annotation: The declared type of the object, if any.
-                realm: The realm to serialize to.
-                file_factory: An optional factory function to create new files.
-
-            Returns:
-                The written file.
-
-            Raises:
-                ValueError: If the target MIME type is not supported.
-                TypeError: If the array holds Python objects.
-            """
             target = self._file_target(target_type, file_factory)
             mime = target.default_mime
 
@@ -1143,23 +664,8 @@ try:
             self,
             source: NpFile,
             scope: TransportScope = Open(),
-            realm: Realm | None = None,
             annotation: TypeDef[Any] | None = None,
         ) -> np.ndarray:
-            """Deserialize an array from ``.npy``, ``.npz`` or CSV.
-
-            Args:
-                source: The file to deserialize from.
-                scope: The serialization scope to use for the deserialization.
-                realm: The realm to deserialize from.
-                annotation: The declared type of the object, if any.
-
-            Returns:
-                The deserialized array.
-
-            Raises:
-                ValueError: If the source MIME type is not supported.
-            """
             file = _require_file(source, type(self).__name__)
 
             with file.open("r") as stream:
@@ -1237,7 +743,7 @@ try:
         """
         return ";\n\n".join(_format_statements(instance))
 
-    class SQLSerializer(CommonSerializer[SQLStatement, str | SQLFile]):
+    class SQLSerializer(Serializer[SQLStatement, str | SQLFile, Open]):
         """Serializer for SQL statements."""
 
         # The text target and the ``.sql`` file hold the same reformatted
@@ -1252,23 +758,8 @@ try:
             allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
-            realm: Realm | None = None,
-            file_factory: Callable[[], File] | None = None,
+            backend: Backend = Memory(),
         ) -> str | SQLFile:
-            """Serialize statements to SQL text or to an SQL file.
-
-            Args:
-                instance: One statement or an iterable of statements.
-                target_type: The target type or format to serialize to.
-                allow_lossy: Whether to require a lossless serialization.
-                scope: The serialization scope to use for the serialization.
-                annotation: The declared type of the object, if any.
-                realm: The realm to serialize to.
-                file_factory: An optional factory function to create new files.
-
-            Returns:
-                The written file, or the SQL text when a text target was requested.
-            """
             text = _join_statements(instance)
             target = self._resolve_target(target_type, file_factory)
 
@@ -1284,20 +775,8 @@ try:
             self,
             source: str | SQLFile,
             scope: TransportScope = Open(),
-            realm: Realm | None = None,
             annotation: TypeDef[Any] | None = None,
         ) -> SQLStatement:
-            """Deserialize statements from SQL text or from an SQL file.
-
-            Args:
-                source: The file or text to deserialize from.
-                scope: The serialization scope to use for the deserialization.
-                realm: The realm to deserialize from.
-                annotation: The declared type of the object, if any.
-
-            Returns:
-                The deserialized statements.
-            """
             statements = [sqla.text(str(stmt)) for stmt in sqlparse.parse(_read_text(source))]
 
             # Rebuild the container the annotation asks for; the statement count
@@ -1336,12 +815,12 @@ try:
             if total == 0:
                 return 0
 
-            sample = statements[:: _sample_step(total, _SQL_ESTIMATE_SAMPLE)]
-            formatted = _encoded_size(
+            sample = statements[:: max(total // _SQL_ESTIMATE_SAMPLE, 1)]
+            formatted = len(
                 ";\n\n".join(
                     sqlparse.format(str(statement), reindent=True, keyword_case="upper")
                     for statement in sample
-                )
+                ).encode("utf-8")
             )
 
             return int(formatted * total / len(sample))
@@ -1396,7 +875,7 @@ try:
 
         return None
 
-    class ImageSerializer(CommonSerializer[Image.Image, ImageFile]):
+    class ImageSerializer(Serializer[Image.Image, ImageFile, Open]):
         """Serializer for PIL images."""
 
         __lossless_mimes__ = frozenset({"image/png", "image/tiff", "image/bmp"})
@@ -1409,26 +888,8 @@ try:
             allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
-            realm: Realm | None = None,
-            file_factory: Callable[[], File] | None = None,
+            backend: Backend = Memory(),
         ) -> ImageFile:
-            """Serialize an image to an image file.
-
-            Args:
-                instance: The image to serialize.
-                target_type: The target type or format to serialize to.
-                allow_lossy: Whether to require a lossless serialization.
-                scope: The serialization scope to use for the serialization.
-                annotation: The declared type of the object, if any.
-                realm: The realm to serialize to.
-                file_factory: An optional factory function to create new files.
-
-            Returns:
-                The written file.
-
-            Raises:
-                ValueError: If the target MIME type is not supported.
-            """
             target = self._file_target(target_type, file_factory)
 
             # The encoder comes from the target format, never from the source
@@ -1448,20 +909,8 @@ try:
             self,
             source: ImageFile,
             scope: TransportScope = Open(),
-            realm: Realm | None = None,
             annotation: TypeDef[Any] | None = None,
         ) -> Image.Image:
-            """Deserialize an image from an image file.
-
-            Args:
-                source: The file to deserialize from.
-                scope: The serialization scope to use for the deserialization.
-                realm: The realm to deserialize from.
-                annotation: The declared type of the object, if any.
-
-            Returns:
-                The deserialized image.
-            """
             file = _require_file(source, type(self).__name__)
 
             with file.open("r") as stream:
@@ -1526,11 +975,11 @@ try:
                 )
                 size += 2 * len(node.name or "") + _HTML_TAG_OVERHEAD + attributes
             else:
-                size += _encoded_size(str(node))
+                size += len(str(node).encode("utf-8"))
 
         return size
 
-    class HTMLSerializer(CommonSerializer[BeautifulSoup, str | HTMLFile]):
+    class HTMLSerializer(Serializer[BeautifulSoup, str | HTMLFile, Open]):
         """Serializer for BeautifulSoup HTML."""
 
         # The text target and the ``.html`` file hold the same re-rendered
@@ -1545,23 +994,8 @@ try:
             allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
-            realm: Realm | None = None,
-            file_factory: Callable[[], File] | None = None,
+            backend: Backend = Memory(),
         ) -> str | HTMLFile:
-            """Serialize a soup to HTML text or to an HTML file.
-
-            Args:
-                instance: The soup to serialize.
-                target_type: The target type or format to serialize to.
-                allow_lossy: Whether to require a lossless serialization.
-                scope: The serialization scope to use for the serialization.
-                annotation: The declared type of the object, if any.
-                realm: The realm to serialize to.
-                file_factory: An optional factory function to create new files.
-
-            Returns:
-                The written file, or the HTML text when a text target was requested.
-            """
             text = str(instance)
             target = self._resolve_target(target_type, file_factory)
 
@@ -1577,20 +1011,8 @@ try:
             self,
             source: str | HTMLFile,
             scope: TransportScope = Open(),
-            realm: Realm | None = None,
             annotation: TypeDef[Any] | None = None,
         ) -> BeautifulSoup:
-            """Deserialize a soup from HTML text or from an HTML file.
-
-            Args:
-                source: The file or text to deserialize from.
-                scope: The serialization scope to use for the deserialization.
-                realm: The realm to deserialize from.
-                annotation: The declared type of the object, if any.
-
-            Returns:
-                The deserialized soup.
-            """
             return check_type_and_cast(BeautifulSoup(_read_text(source), "html.parser"), annotation)
 
         @override
@@ -1616,7 +1038,7 @@ except ImportError:
 type PickleFile = File[Literal["application/pickle"], BinaryIO]
 
 
-class PickleSerializer(CommonSerializer[Any, PickleFile]):
+class PickleSerializer(Serializer[Any, PickleFile, Open]):
     """Serializer for Pickle files.
 
     Pickle reproduces any object exactly, but loading a pickle executes arbitrary
@@ -1633,8 +1055,7 @@ class PickleSerializer(CommonSerializer[Any, PickleFile]):
         allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
-        realm: Realm | None = None,
-        file_factory: Callable[[], File] | None = None,
+        backend: Backend = Memory(),
     ) -> PickleFile:
         """Serialize any object to a Pickle file.
 
@@ -1644,8 +1065,7 @@ class PickleSerializer(CommonSerializer[Any, PickleFile]):
             allow_lossy: Whether to require a lossless serialization.
             scope: The serialization scope to use for the serialization.
             annotation: The declared type of the object, if any.
-            realm: The realm to serialize to.
-            file_factory: An optional factory function to create new files.
+            backend: The backend to serialize to.
 
         Returns:
             The written file.
@@ -1662,20 +1082,8 @@ class PickleSerializer(CommonSerializer[Any, PickleFile]):
         self,
         source: PickleFile,
         scope: TransportScope = Open(),
-        realm: Realm | None = None,
         annotation: TypeDef[Any] | None = None,
     ) -> Any:
-        """Deserialize any object from a Pickle file.
-
-        Args:
-            source: The file to deserialize from.
-            scope: The serialization scope to use for the deserialization.
-            realm: The realm to deserialize from.
-            annotation: The declared type of the object, if any.
-
-        Returns:
-            The deserialized object.
-        """
         file = _require_file(source, type(self).__name__)
 
         with file.open("r") as stream:
@@ -1699,6 +1107,69 @@ class PickleSerializer(CommonSerializer[Any, PickleFile]):
         bounds the payload, which depends on the pickler's own opcode stream.
         """
         return len(pickle.dumps(instance))
+
+
+# Primitive types
+
+
+class PrimitiveSerializer(Serializer[V, T, Open]):
+    """Shared handling for serializers that map onto a JSON-supported value."""
+
+    @abstractmethod
+    def _encode(self, instance: V) -> T:
+        """Convert the object into its primitive representation."""
+        ...
+
+    @abstractmethod
+    def _decode(self, source: T, annotation: TypeDef[Any] | None = None) -> V:
+        """Restore the object from its primitive representation."""
+        ...
+
+    @override
+    def serialize(
+        self,
+        instance: V,
+        target_type: TypeDef[Any] | None = None,
+        allow_lossy: bool = False,
+        scope: TransportScope = Open(),
+        annotation: TypeDef[Any] | None = None,
+        backend: Backend = Memory(),
+    ) -> T:
+        if is_subtype(target_type, File):
+            raise ValueError(
+                f"{type(self).__name__} serializes to a JSON value, not to a file; embed "
+                "the value in a dict or list to write it to a file."
+            )
+
+        return self._encode(instance)
+
+    @override
+    def deserialize(
+        self,
+        source: T,
+        annotation: TypeDef[Any],
+        scope: TransportScope = Open(),
+    ) -> V:
+        if isinstance(source, File):
+            raise TypeError(
+                f"{type(self).__name__} deserializes from a JSON value, "
+                f"got a {type(source).__name__}."
+            )
+
+        decoded = self._decode(source, annotation)
+        assert has_type(decoded, annotation)
+        return decoded
+
+    @override
+    def estimate_serialized_size(
+        self,
+        instance: V,
+        target_type: TypeDef[Any] | None = None,
+        allow_lossy: bool = False,
+        scope: TransportScope = Open(),
+        annotation: TypeDef[Any] | None = None,
+    ) -> int:
+        return len(json.dumps(self._encode(instance)).encode("utf-8"))
 
 
 # Dates and times
@@ -1866,4 +1337,4 @@ for _serializer in (
     PickleSerializer,
 ):
     if _serializer is not None:
-        common_serializers.append(_serializer())
+        register_serializer(_serializer())
