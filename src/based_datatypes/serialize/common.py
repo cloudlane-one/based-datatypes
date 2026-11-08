@@ -34,8 +34,8 @@ from .base import (
     SerializedDict,
     SerializedValue,
     Serializer,
-    UnsupportedTargetError,
     TransportScope,
+    UnsupportedTargetError,
     target_mimes,
 )
 
@@ -46,7 +46,9 @@ V = TypeVar("V")
 T = TypeVar("T", bound=Serialized)
 
 
-def check_type_and_cast[T](obj: Any, annotation: TypeDef[Any] | None = None) -> T:  # pyright: ignore[reportInvalidTypeVarUse]
+def check_type_and_cast[T](
+    obj: Any, annotation: TypeDef[Any] | None = None
+) -> T:  # pyright: ignore[reportInvalidTypeVarUse]
     """Check if the object matches the annotation type and cast it."""
     if annotation is not None and not TypeRef(annotation).validate(obj):
         raise TypeError(f"Object does not match expected type: {annotation}")
@@ -287,7 +289,7 @@ class PrimitiveSerializer(CommonSerializer[V, T]):
         self,
         instance: V,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
         realm: Realm | None = None,
@@ -298,7 +300,7 @@ class PrimitiveSerializer(CommonSerializer[V, T]):
         Args:
             instance: The object to serialize.
             target_type: The target type or format to serialize to.
-            lossless: Whether to require a lossless serialization.
+            allow_lossy: Whether to require a lossless serialization.
             scope: The serialization scope to use for the serialization.
             annotation: The declared type of the object, if any.
             realm: The realm to serialize to.
@@ -353,7 +355,7 @@ class PrimitiveSerializer(CommonSerializer[V, T]):
         self,
         instance: V,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
     ) -> int:
@@ -431,7 +433,7 @@ def _container_payload(value: Any, scope: TransportScope, realm: Realm | None) -
     # Imported here because the entry points of the package import this module.
     from . import serialize
 
-    converted = serialize(value, scope=scope, realm=realm, lossless=False)
+    converted = serialize(value, scope=scope, realm=realm)
     if converted is value:
         raise UnsupportedTargetError(
             f"{type(value).__name__} serializes to itself, so a container cannot carry it."
@@ -450,7 +452,7 @@ class JSONSerializer(CommonSerializer[JSONDict, SerializedDict | JSONFile]):
         self,
         instance: JSONDict,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
         realm: Realm | None = None,
@@ -461,7 +463,7 @@ class JSONSerializer(CommonSerializer[JSONDict, SerializedDict | JSONFile]):
         Args:
             instance: The dictionary to serialize.
             target_type: The target type or format to serialize to.
-            lossless: Whether to require a lossless serialization.
+            allow_lossy: Whether to require a lossless serialization.
             scope: The serialization scope to use for the serialization.
             annotation: The declared type of the object, if any.
             realm: The realm to serialize to.
@@ -505,7 +507,7 @@ class JSONSerializer(CommonSerializer[JSONDict, SerializedDict | JSONFile]):
         self,
         instance: JSONDict,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
     ) -> int:
@@ -536,7 +538,7 @@ class ContainerSerializer(CommonSerializer[Container, SerializedDict | list[Seri
         self,
         instance: Container,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
         realm: Realm | None = None,
@@ -547,7 +549,7 @@ class ContainerSerializer(CommonSerializer[Container, SerializedDict | list[Seri
         Args:
             instance: The container to serialize.
             target_type: The target type or format to serialize to.
-            lossless: Whether to require a lossless serialization.
+            allow_lossy: Whether to require a lossless serialization.
             scope: The serialization scope to use for the serialization.
             annotation: The declared type of the object, if any.
             realm: The realm to serialize to.
@@ -597,7 +599,7 @@ class ContainerSerializer(CommonSerializer[Container, SerializedDict | list[Seri
         self,
         instance: Container,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
     ) -> int:
@@ -636,7 +638,7 @@ class XMLSerializer(CommonSerializer[xml.ElementTree, str | XMLFile]):
         self,
         instance: xml.ElementTree,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
         realm: Realm | None = None,
@@ -647,7 +649,7 @@ class XMLSerializer(CommonSerializer[xml.ElementTree, str | XMLFile]):
         Args:
             instance: The tree to serialize.
             target_type: The target type or format to serialize to.
-            lossless: Whether to require a lossless serialization.
+            allow_lossy: Whether to require a lossless serialization.
             scope: The serialization scope to use for the serialization.
             annotation: The declared type of the object, if any.
             realm: The realm to serialize to.
@@ -697,7 +699,7 @@ class XMLSerializer(CommonSerializer[xml.ElementTree, str | XMLFile]):
         self,
         instance: xml.ElementTree,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
     ) -> int:
@@ -722,7 +724,7 @@ try:
             self,
             instance: pyd.BaseModel,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
             realm: Realm | None = None,
@@ -738,7 +740,7 @@ try:
             Args:
                 instance: The model to serialize.
                 target_type: The target type or format to serialize to.
-                lossless: Whether to require a lossless serialization.
+                allow_lossy: Whether to require a lossless serialization.
                 scope: The serialization scope to use for the serialization.
                 annotation: The declared type of the object, if any.
                 realm: The realm to serialize to.
@@ -789,7 +791,7 @@ try:
             self,
             instance: pyd.BaseModel,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
         ) -> int:
@@ -834,7 +836,7 @@ try:
             self,
             instance: pd.DataFrame,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
             realm: Realm | None = None,
@@ -845,7 +847,7 @@ try:
             Args:
                 instance: The frame to serialize.
                 target_type: The target type or format to serialize to.
-                lossless: Whether to require a lossless serialization.
+                allow_lossy: Whether to require a lossless serialization.
                 scope: The serialization scope to use for the serialization.
                 annotation: The declared type of the object, if any.
                 realm: The realm to serialize to.
@@ -920,7 +922,7 @@ try:
             self,
             instance: pd.DataFrame,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
         ) -> int:
@@ -953,7 +955,7 @@ class PlSerializer(CommonSerializer[pl.DataFrame, DfFile]):
         self,
         instance: pl.DataFrame,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
         realm: Realm | None = None,
@@ -964,7 +966,7 @@ class PlSerializer(CommonSerializer[pl.DataFrame, DfFile]):
         Args:
             instance: The frame to serialize.
             target_type: The target type or format to serialize to.
-            lossless: Whether to require a lossless serialization.
+            allow_lossy: Whether to require a lossless serialization.
             scope: The serialization scope to use for the serialization.
             annotation: The declared type of the object, if any.
             realm: The realm to serialize to.
@@ -1035,7 +1037,7 @@ class PlSerializer(CommonSerializer[pl.DataFrame, DfFile]):
         self,
         instance: pl.DataFrame,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
     ) -> int:
@@ -1091,7 +1093,7 @@ try:
             self,
             instance: np.ndarray,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
             realm: Realm | None = None,
@@ -1102,7 +1104,7 @@ try:
             Args:
                 instance: The array to serialize.
                 target_type: The target type or format to serialize to.
-                lossless: Whether to require a lossless serialization.
+                allow_lossy: Whether to require a lossless serialization.
                 scope: The serialization scope to use for the serialization.
                 annotation: The declared type of the object, if any.
                 realm: The realm to serialize to.
@@ -1177,7 +1179,7 @@ try:
             self,
             instance: np.ndarray,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
         ) -> int:
@@ -1247,7 +1249,7 @@ try:
             self,
             instance: SQLStatement,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
             realm: Realm | None = None,
@@ -1258,7 +1260,7 @@ try:
             Args:
                 instance: One statement or an iterable of statements.
                 target_type: The target type or format to serialize to.
-                lossless: Whether to require a lossless serialization.
+                allow_lossy: Whether to require a lossless serialization.
                 scope: The serialization scope to use for the serialization.
                 annotation: The declared type of the object, if any.
                 realm: The realm to serialize to.
@@ -1318,7 +1320,7 @@ try:
             self,
             instance: SQLStatement,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
         ) -> int:
@@ -1404,7 +1406,7 @@ try:
             self,
             instance: Image.Image,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
             realm: Realm | None = None,
@@ -1415,7 +1417,7 @@ try:
             Args:
                 instance: The image to serialize.
                 target_type: The target type or format to serialize to.
-                lossless: Whether to require a lossless serialization.
+                allow_lossy: Whether to require a lossless serialization.
                 scope: The serialization scope to use for the serialization.
                 annotation: The declared type of the object, if any.
                 realm: The realm to serialize to.
@@ -1473,7 +1475,7 @@ try:
             self,
             instance: Image.Image,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
         ) -> int:
@@ -1533,14 +1535,14 @@ try:
 
         # The text target and the ``.html`` file hold the same re-rendered
         # markup, so losslessness is declared once for both.
-        __lossless_values__ = False
+        __lossless_values__ = True
 
         @override
         def serialize(
             self,
             instance: BeautifulSoup,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
             realm: Realm | None = None,
@@ -1551,7 +1553,7 @@ try:
             Args:
                 instance: The soup to serialize.
                 target_type: The target type or format to serialize to.
-                lossless: Whether to require a lossless serialization.
+                allow_lossy: Whether to require a lossless serialization.
                 scope: The serialization scope to use for the serialization.
                 annotation: The declared type of the object, if any.
                 realm: The realm to serialize to.
@@ -1596,7 +1598,7 @@ try:
             self,
             instance: BeautifulSoup,
             target_type: TypeDef[Any] | None = None,
-            lossless: bool = True,
+            allow_lossy: bool = False,
             scope: TransportScope = Open(),
             annotation: TypeDef[Any] | None = None,
         ) -> int:
@@ -1628,7 +1630,7 @@ class PickleSerializer(CommonSerializer[Any, PickleFile]):
         self,
         instance: Any,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
         realm: Realm | None = None,
@@ -1639,7 +1641,7 @@ class PickleSerializer(CommonSerializer[Any, PickleFile]):
         Args:
             instance: The object to serialize.
             target_type: The target type or format to serialize to.
-            lossless: Whether to require a lossless serialization.
+            allow_lossy: Whether to require a lossless serialization.
             scope: The serialization scope to use for the serialization.
             annotation: The declared type of the object, if any.
             realm: The realm to serialize to.
@@ -1686,7 +1688,7 @@ class PickleSerializer(CommonSerializer[Any, PickleFile]):
         self,
         instance: Any,
         target_type: TypeDef[Any] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: TypeDef[Any] | None = None,
     ) -> int:

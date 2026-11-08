@@ -59,7 +59,7 @@ def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
     typ: TypeDef[U],
     targets: Collection[TypeDef[T]] | None = None,
     scope: S = Open(),
-    lossless: L = False,
+    allow_lossy: L = False,
     value: object | None = None,
 ) -> list[tuple[int, SerializationTarget[T, S, L], Serializer[U, T, S] | type[Serializable[T, S]]]]:
     """Get the serializers that can handle a given type or instance.
@@ -72,7 +72,7 @@ def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
             check and returns the serializers for the object type alone.
         scope: The scope to select for. A serializer declared for a supertype
             scope (e.g. Open) also serves a request for a narrower one.
-        lossless: When ``True``, only serializers that round-trip the target
+        allow_lossy: When ``True``, only serializers that round-trip the target
             format without loss are eligible; ``False`` accepts either.
         value: The instance to select for. A type alone cannot express element
             constraints — an SQL statement list and ``[1, 2]`` are both ``list`` —
@@ -96,7 +96,7 @@ def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
                 (i, t, cls)
                 for i, t in enumerate(
                     SerializationTarget.match(
-                        cls.__serialization_targets__(), targets, scope, lossless
+                        cls.__serialization_targets__(), targets, scope, allow_lossy
                     )
                 )
             ],
@@ -112,7 +112,7 @@ def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
             for driver in custom_serializers + common_serializers
             if _handles(driver, typ, value)
             for i, t in enumerate(
-                SerializationTarget.match(driver.serialization_targets, targets, scope, lossless)
+                SerializationTarget.match(driver.serialization_targets, targets, scope, allow_lossy)
             )
         ],
         key=lambda x: x[0],
@@ -257,7 +257,7 @@ def deserialize[V2](
         annotation,
         targets=[_source_type(source)],
         scope=scope,
-        lossless=False,
+        allow_lossy=True,
     )
 
     if len(candidates) == 0:
@@ -285,7 +285,7 @@ def deserialize[V2](
 def serialize[T2: Serialized](
     instance: Any,
     target_type: TypeDef[T2] | None = None,
-    lossless: bool = True,
+    allow_lossy: bool = False,
     scope: TransportScope = Open(),
     annotation: TypeDef[Serializable[T2]] | None = None,
     realm: Realm | None = None,
@@ -295,12 +295,12 @@ def serialize[T2: Serialized](
 
     When no target type is given, the serializer picks its preferred format: the
     first one it declares, which is the lossless one wherever it has a choice.
-    ``lossless`` therefore only filters the selection once a target is requested.
+    ``allow_lossy`` therefore only filters the selection once a target is requested.
 
     Args:
         instance: The object to serialize.
         target_type: The target type or format to serialize to.
-        lossless: Whether to require a lossless serialization.
+        allow_lossy: Whether to allow a lossy serialization.
         scope: The serialization scope to use for the serialization.
         annotation: The declared type of the object, if any.
         realm: The realm to serialize to.
@@ -316,7 +316,7 @@ def serialize[T2: Serialized](
         # Without a requested target the driver picks its preferred format, so
         # there is no format to judge: the lossless filter applies only once a
         # target is asked for.
-        lossless=lossless if target_type is not None else False,
+        allow_lossy=allow_lossy if target_type is not None else False,
         # With no annotation the instance itself narrows the selection: a bare
         # ``list`` cannot say whether it holds SQL statements or integers.
         value=instance if annotation is None else None,
@@ -326,28 +326,28 @@ def serialize[T2: Serialized](
         raise ValueError(
             f"No suitable serializer found for {type(instance).__name__} to "
             f"{target_type!r} under scope {scope!r} "
-            f"with lossless={lossless}."
+            f"with allow_lossy={allow_lossy}."
         )
 
     return cast(
         T2,
         _dispatch(
             candidates,
-            lambda driver, target: (
-                driver.__serialize__(
+            lambda serializer, target: (
+                serializer.__serialize__(
                     instance,
                     target_type=target_type if target_type is not None else target.type,
-                    lossless=target.lossless,
+                    allow_lossy=target.lossy,
                     scope=scope,
                     realm=realm,
                     file_factory=file_factory,
                     annotation=annotation,
                 )
-                if isinstance(driver, type)
-                else driver.serialize(
+                if isinstance(serializer, type)
+                else serializer.serialize(
                     instance,
                     target_type=target_type if target_type is not None else target.type,
-                    lossless=target.lossless,
+                    allow_lossy=target.lossy,
                     scope=scope,
                     realm=realm,
                     file_factory=file_factory,
@@ -363,7 +363,7 @@ def serialize[T2: Serialized](
 def estimate_serialized_size[T2: Serialized](
     instance: Any,
     target_type: TypeDef[T2],
-    lossless: bool = True,
+    allow_lossy: bool = False,
     scope: TransportScope = Open(),
     annotation: TypeDef[Serializable[T2]] | None = None,
     realm: Realm | None = None,
@@ -378,7 +378,7 @@ def estimate_serialized_size[T2: Serialized](
     Args:
         instance: The object to be serialized.
         target_type: The target type or format to serialize to.
-        lossless: Whether to require a lossless serialization.
+        allow_lossy: Whether to allow a lossy serialization.
         scope: The serialization scope to use for the serialization.
         annotation: The declared type of the object, if any.
         realm: The realm to serialize to.
@@ -391,7 +391,7 @@ def estimate_serialized_size[T2: Serialized](
         typ=annotation if annotation is not None else type(instance),
         targets=[target_type] if target_type is not None else None,
         scope=scope,
-        lossless=lossless,
+        allow_lossy=allow_lossy,
         value=instance if annotation is None else None,
     )
 
@@ -399,7 +399,7 @@ def estimate_serialized_size[T2: Serialized](
         raise ValueError(
             f"No suitable serializer found for {type(instance).__name__} to "
             f"{target_type!r} under scope {scope!r} "
-            f"with lossless={lossless}."
+            f"with allow_lossy={allow_lossy}."
         )
 
     return _dispatch(
@@ -408,7 +408,7 @@ def estimate_serialized_size[T2: Serialized](
             driver.__estimate_serialized_size__(
                 instance,
                 target_type=target_type,
-                lossless=target.lossless,
+                allow_lossy=target.lossy,
                 scope=scope,
                 annotation=annotation,
             )
@@ -416,7 +416,7 @@ def estimate_serialized_size[T2: Serialized](
             else driver.estimate_serialized_size(
                 instance,
                 target_type=target_type,
-                lossless=target.lossless,
+                allow_lossy=target.lossy,
                 scope=scope,
                 annotation=annotation,
             )

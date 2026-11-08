@@ -124,15 +124,15 @@ class SerializationTarget(Generic[T, S, L]):
     is dispatched, so this field only ever describes the declaration.
     """
 
-    lossless: L
-    """Whether this target format supports lossless serialization."""
+    lossy: L
+    """Whether this target format is lossy."""
 
     @staticmethod
     def match(
         targets: Iterable[SerializationTarget[Any, Any, Any]],
         types: Collection[TypeDef[Serialized]] | None = None,
         scope: TransportScope | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
     ) -> list[SerializationTarget[T, S, L]]:
         """Return the subset of targets that match any of the given types.
 
@@ -140,7 +140,7 @@ class SerializationTarget(Generic[T, S, L]):
             targets: The list of serialization targets to filter.
             types: The collection of types to match against.
             scope: The scope to match.
-            lossless: Whether to only include lossless targets.
+            allow_lossy: Whether to include lossy targets.
 
         Returns:
             The list of matching serialization targets.
@@ -156,7 +156,7 @@ class SerializationTarget(Generic[T, S, L]):
                     else True
                 )
                 and (_scope_serves(t.scope, scope) if scope is not None else True)
-                and (not lossless or t.lossless)
+                and (allow_lossy or not t.lossy)
             ],
         )
 
@@ -165,7 +165,7 @@ current_ser_ctx: ContextVar[
     tuple[SerializationTarget[SerializedDict, Open, bool], Realm | None]
 ] = ContextVar(
     "current_ser_ctx",
-    default=(SerializationTarget(type=SerializedDict, scope=Open(), lossless=True), None),
+    default=(SerializationTarget(type=SerializedDict, scope=Open(), lossy=False), None),
 )
 """The current serialization context: (serialization target, realm)."""
 
@@ -215,7 +215,7 @@ class Serializable(Protocol[T, S]):  # pyright: ignore[reportInvalidTypeVarUse]
     def __serialize__(
         self: Serializable[T2],
         target_type: TypeDef[T2],
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: S = Open(),
         annotation: TypeDef[Serializable[T2]] | None = None,
         realm: Realm | None = None,
@@ -225,7 +225,7 @@ class Serializable(Protocol[T, S]):  # pyright: ignore[reportInvalidTypeVarUse]
 
         Args:
             target_type: The target type or format to serialize to.
-            lossless: Whether to require a lossless serialization.
+            allow_lossy: Whether to allow lossy serialization.
             scope: The serialization scope to use for the serialization.
             annotation: The declared type of the object, if any.
             realm: The realm to serialize to.
@@ -239,7 +239,7 @@ class Serializable(Protocol[T, S]):  # pyright: ignore[reportInvalidTypeVarUse]
     def __estimate_serialized_size__(
         self: Serializable[T2],
         target_type: TypeDef[T2],
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: S = Open(),
         annotation: TypeDef[Serializable[T2]] | None = None,
     ) -> int:
@@ -247,7 +247,7 @@ class Serializable(Protocol[T, S]):  # pyright: ignore[reportInvalidTypeVarUse]
 
         Args:
             target_type: The target type or format to estimate the byte size for.
-            lossless: Whether to require a lossless serialization.
+            allow_lossy: Whether to allow lossy serialization.
             scope: The serialization scope to use for the estimation.
             annotation: The declared type of the object, if any.
 
@@ -347,7 +347,9 @@ class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
         return cast(
             list[SerializationTarget[T, S, Any]],
             [
-                SerializationTarget(type=member, scope=scope, lossless=self.lossless_target(member))
+                SerializationTarget(
+                    type=member, scope=scope, lossy=not self.lossless_target(member)
+                )
                 for member in typeref.members
                 for scope in declared
             ],
@@ -379,7 +381,7 @@ class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
         self,
         instance: V,
         target_type: TypeDef[T] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: S = Open(),
         annotation: TypeDef[V] | None = None,
         realm: Realm | None = None,
@@ -390,7 +392,7 @@ class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
         Args:
             instance: The object to serialize.
             target_type: The target type or format to serialize to.
-            lossless: Whether to require a lossless serialization.
+            allow_lossy: Whether to allow lossy serialization.
             scope: The serialization scope to use for the serialization.
             annotation: The declared type of the object, if any.
             realm: The realm to serialize to.
@@ -405,7 +407,7 @@ class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
         self,
         instance: V,
         target_type: TypeDef[T] | None = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: S = Open(),
         annotation: TypeDef[V] | None = None,
     ) -> int:
@@ -418,7 +420,7 @@ class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
         Args:
             instance: The object to be serialized.
             target_type: The target type or format to serialize to.
-            lossless: Whether to require a lossless serialization.
+            allow_lossy: Whether to allow lossy serialization.
             scope: The serialization scope to use for the serialization.
             annotation: The declared type of the object, if any.
 

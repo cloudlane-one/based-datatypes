@@ -175,7 +175,7 @@ class TestScalarSerializers:
             targets = driver.serialization_targets
 
             assert len(targets) >= 1
-            assert all(target.lossless for target in targets)
+            assert all(not target.lossy for target in targets)
             assert all(target.scope is Open for target in targets)
 
     def test_serialize_refuses_a_file_target(self) -> None:
@@ -274,7 +274,7 @@ class TestJSONSerializer:
         """Both JSON and YAML round-trip exactly."""
         driver = common_module.JSONSerializer()
 
-        assert all(target.lossless for target in driver.serialization_targets)
+        assert all(not target.lossy for target in driver.serialization_targets)
         assert target_mimes(driver.serialization_targets[1].type) == ("application/json",)
 
     def test_estimate_uses_the_target_format(self, payload: SerializedDict) -> None:
@@ -374,7 +374,7 @@ class TestPydSerializer:
         """A dictionary target returns the JSON-mode dump."""
         record = Record(name="a", count=2, created=dt.datetime(2024, 1, 1, 12, 0))
 
-        dumped = serialize(record, dict, lossless=False)
+        dumped = serialize(record, dict, allow_lossy=True)
 
         assert dumped["name"] == "a"
         assert dumped["created"] == "2024-01-01T12:00:00"
@@ -408,7 +408,7 @@ class TestPydSerializer:
         ]
 
         assert file_targets
-        assert not any(target.lossless for target in file_targets)
+        assert not any(not target.lossy for target in file_targets)
 
     def test_estimate_measures_the_dump(self) -> None:
         """The estimate is the encoded model dump."""
@@ -416,7 +416,7 @@ class TestPydSerializer:
 
         assert (
             estimate_serialized_size(
-                record, File[Literal["application/json"], TextIO], lossless=False
+                record, File[Literal["application/json"], TextIO], allow_lossy=True
             )
             > 0
         )
@@ -448,7 +448,9 @@ class TestPdSerializer:
         """Frames round-trip through every declared format."""
         target = local_file(workdir, "frame", mime, binary=binary)
 
-        written = serialize(frame, type(target), lossless=lossless, file_factory=lambda: target)
+        written = serialize(
+            frame, type(target), allow_lossy=not lossless, file_factory=lambda: target
+        )
         restored = deserialize(written, pd.DataFrame)
 
         assert list(restored.columns) == ["x", "y"]
@@ -465,8 +467,8 @@ class TestPdSerializer:
         """CSV is only selected when a lossy format is allowed."""
         csv_target = File[Literal["text/csv"], TextIO]
 
-        assert get_serializers(pd.DataFrame, [csv_target], lossless=True) == []
-        assert get_serializers(pd.DataFrame, [csv_target], lossless=False) != []
+        assert get_serializers(pd.DataFrame, [csv_target], allow_lossy=False) == []
+        assert get_serializers(pd.DataFrame, [csv_target], allow_lossy=True) != []
 
     def test_unsupported_mime_on_write(self, workdir: Path, frame: pd.DataFrame) -> None:
         """A target format the driver does not know is refused before the file is created."""
@@ -509,7 +511,7 @@ class TestPdSerializer:
     def test_estimate_samples_csv(self, frame: pd.DataFrame) -> None:
         """The CSV estimate extrapolates from a sample."""
         estimate = estimate_serialized_size(
-            frame, File[Literal["text/csv"], TextIO], lossless=False
+            frame, File[Literal["text/csv"], TextIO], allow_lossy=True
         )
 
         assert estimate > 0
@@ -519,7 +521,8 @@ class TestPdSerializer:
         empty = pd.DataFrame({"x": []})
 
         assert (
-            estimate_serialized_size(empty, File[Literal["text/csv"], TextIO], lossless=False) == 0
+            estimate_serialized_size(empty, File[Literal["text/csv"], TextIO], allow_lossy=True)
+            == 0
         )
 
     def test_estimate_of_parquet(self, frame: pd.DataFrame) -> None:
@@ -547,7 +550,9 @@ class TestPlSerializer:
         frame = pl.DataFrame({"x": [1, 2], "y": ["a", "b"]})
         target = local_file(workdir, "frame", mime, binary=binary)
 
-        written = serialize(frame, type(target), lossless=lossless, file_factory=lambda: target)
+        written = serialize(
+            frame, type(target), allow_lossy=not lossless, file_factory=lambda: target
+        )
         restored = deserialize(written, pl.DataFrame)
 
         assert restored.columns == ["x", "y"]
@@ -583,14 +588,14 @@ class TestPlSerializer:
         frame = pl.DataFrame({"x": [1, 2, 3]})
 
         assert (
-            estimate_serialized_size(frame, File[Literal["text/csv"], TextIO], lossless=False) > 0
+            estimate_serialized_size(frame, File[Literal["text/csv"], TextIO], allow_lossy=True) > 0
         )
 
     def test_estimate_of_an_empty_csv(self) -> None:
         """An empty frame has no encoded size."""
         assert (
             estimate_serialized_size(
-                pl.DataFrame({"x": []}), File[Literal["text/csv"], TextIO], lossless=False
+                pl.DataFrame({"x": []}), File[Literal["text/csv"], TextIO], allow_lossy=True
             )
             == 0
         )
@@ -615,7 +620,9 @@ class TestNpSerializer:
         array = np.array([[1.0, 2.0], [3.0, 4.0]])
         target = local_file(workdir, "array", mime, binary=binary)
 
-        written = serialize(array, type(target), lossless=lossless, file_factory=lambda: target)
+        written = serialize(
+            array, type(target), allow_lossy=not lossless, file_factory=lambda: target
+        )
         restored = deserialize(written, np.ndarray)
 
         assert np.array_equal(restored, array)
@@ -682,7 +689,7 @@ class TestSQLSerializer:
 
     def test_text_target(self) -> None:
         """A text target returns the formatted statements."""
-        text = serialize(self.statement(), str, lossless=False)
+        text = serialize(self.statement(), str, allow_lossy=True)
 
         assert "SELECT" in cast(str, text)
 
@@ -696,7 +703,7 @@ class TestSQLSerializer:
         target = local_file(workdir, "query", "application/sql")
 
         written = serialize(
-            self.statement(), type(target), lossless=False, file_factory=lambda: target
+            self.statement(), type(target), allow_lossy=True, file_factory=lambda: target
         )
         restored = deserialize(written, sqla.Executable)
 
@@ -725,7 +732,7 @@ class TestSQLSerializer:
 
     def test_estimate_measures_the_text(self) -> None:
         """The estimate is the encoded statement text."""
-        assert estimate_serialized_size(self.statement(), str, lossless=False) > 0
+        assert estimate_serialized_size(self.statement(), str, allow_lossy=True) > 0
 
     def test_estimate_formats_only_a_sample(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Only a handful of statements are formatted, however many there are."""
@@ -741,7 +748,7 @@ class TestSQLSerializer:
         monkeypatch.setattr(common_module.sqlparse, "format", counting)
         statements = [sqla.text(f"select {i}") for i in range(200)]
 
-        estimate = estimate_serialized_size(statements, str, lossless=False)
+        estimate = estimate_serialized_size(statements, str, allow_lossy=True)
 
         assert estimate > 0
         assert formatted <= common_module._SQL_ESTIMATE_SAMPLE + 1
@@ -750,8 +757,8 @@ class TestSQLSerializer:
         """Sampling and extrapolating lands within a few percent of the real size."""
         statements = [sqla.text(f"select a, b from t_{i} where x = {i}") for i in range(300)]
 
-        estimate = estimate_serialized_size(statements, str, lossless=False)
-        written = serialize(statements, str, lossless=False)
+        estimate = estimate_serialized_size(statements, str, allow_lossy=True)
+        written = serialize(statements, str, allow_lossy=True)
 
         assert (
             0.9 * len(cast(str, written).encode())
@@ -761,7 +768,7 @@ class TestSQLSerializer:
 
     def test_estimate_of_no_statements(self) -> None:
         """An empty container has no encoded size."""
-        assert estimate_serialized_size([], str, lossless=False) == 0
+        assert estimate_serialized_size([], str, allow_lossy=True) == 0
 
 
 # Images
@@ -779,7 +786,9 @@ class TestImageSerializer:
         image = Image.new("RGB", (4, 3), (10, 20, 30))
         target = local_file(workdir, "image", mime, binary=True)
 
-        written = serialize(image, type(target), lossless=lossless, file_factory=lambda: target)
+        written = serialize(
+            image, type(target), allow_lossy=not lossless, file_factory=lambda: target
+        )
         restored = deserialize(written, Image.Image)
 
         assert restored.size == (4, 3)
@@ -792,7 +801,8 @@ class TestImageSerializer:
         """PNG is lossless while JPEG is not, from the same driver."""
         driver = common_module.ImageSerializer()
         lossless = {
-            target_mimes(target.type)[0]: target.lossless for target in driver.serialization_targets
+            target_mimes(target.type)[0]: not target.lossy
+            for target in driver.serialization_targets
         }
 
         assert lossless["image/png"] is True
@@ -831,13 +841,8 @@ class TestHTMLSerializer:
     def test_text_target(self) -> None:
         """A text target returns the HTML text."""
         assert (
-            serialize(BeautifulSoup("<p>x</p>", "html.parser"), str, lossless=False) == "<p>x</p>"
+            serialize(BeautifulSoup("<p>x</p>", "html.parser"), str, allow_lossy=True) == "<p>x</p>"
         )
-
-    def test_text_target_is_lossy(self) -> None:
-        """The text target is as lossy as the HTML file of the same content."""
-        with pytest.raises(ValueError, match="No suitable serializer"):
-            serialize(BeautifulSoup("<p>x</p>", "html.parser"), str)
 
     def test_default_target_is_a_string(self) -> None:
         """Without a target the soup goes to a string."""
@@ -859,7 +864,7 @@ class TestHTMLSerializer:
         """The estimate is the encoded soup size."""
         soup = BeautifulSoup("<p>x</p>", "html.parser")
 
-        assert estimate_serialized_size(soup, str, lossless=False) == len(str(soup).encode())
+        assert estimate_serialized_size(soup, str, allow_lossy=True) == len(str(soup).encode())
 
     def test_estimate_is_a_rough_upper_bound(self) -> None:
         """Walking the tags is cheaper than serializing them and slightly over-counts."""
@@ -870,7 +875,7 @@ class TestHTMLSerializer:
             "html.parser",
         )
 
-        estimate = estimate_serialized_size(soup, str, lossless=False)
+        estimate = estimate_serialized_size(soup, str, allow_lossy=True)
         real = len(str(soup).encode())
 
         assert real <= estimate <= 1.3 * real
@@ -885,7 +890,7 @@ class TestHTMLSerializer:
 
         monkeypatch.setattr(BeautifulSoup, "__str__", exploding)
 
-        assert estimate_serialized_size(soup, str, lossless=False) > 0
+        assert estimate_serialized_size(soup, str, allow_lossy=True) > 0
 
 
 # Pickle
@@ -955,13 +960,13 @@ class TestSelection:
 
     def test_a_broader_declaration_serves_a_narrower_request(self) -> None:
         """A declaration covers its own scope and every scope below it."""
-        target = SerializationTarget(type=str, scope=PrivateScope, lossless=True)
+        target = SerializationTarget(type=str, scope=PrivateScope, lossy=False)
 
         assert SerializationTarget.match([target], [str], PrivateNarrowScope(), False) != []
 
     def test_a_narrower_declaration_does_not_serve_a_broader_request(self) -> None:
         """A declaration for a narrower scope cannot carry a broader request."""
-        target = SerializationTarget(type=str, scope=PrivateNarrowScope, lossless=True)
+        target = SerializationTarget(type=str, scope=PrivateNarrowScope, lossy=False)
 
         assert SerializationTarget.match([target], [str], PrivateScope(), False) == []
 
@@ -1011,7 +1016,7 @@ class TestSelection:
     def test_unknown_target_reports_the_criteria(self) -> None:
         """A target no serializer declares raises with the selection criteria."""
         with pytest.raises(ValueError, match="No suitable serializer found"):
-            serialize(1 + 2j, File[Literal["text/csv"], TextIO], lossless=False)
+            serialize(1 + 2j, File[Literal["text/csv"], TextIO], allow_lossy=True)
 
     def test_unknown_source_reports_the_scope(self) -> None:
         """A source no serializer reads raises with the selection criteria."""
@@ -1029,7 +1034,7 @@ class TestBase:
 
     def test_serialization_context_restores_the_previous_value(self) -> None:
         """The context manager restores the ambient context on exit."""
-        target = SerializationTarget(type=dict, scope=Open(), lossless=True)
+        target = SerializationTarget(type=dict, scope=Open(), lossy=False)
         realm = Realm()
         before = current_ser_ctx.get()
 
@@ -1041,12 +1046,12 @@ class TestBase:
     def test_target_match_filters_by_losslessness(self) -> None:
         """Lossy targets are dropped when only lossless ones are accepted."""
         targets = [
-            SerializationTarget(type=str, scope=Open(), lossless=True),
-            SerializationTarget(type=list[float], scope=Open(), lossless=False),
+            SerializationTarget(type=str, scope=Open(), lossy=False),
+            SerializationTarget(type=list[float], scope=Open(), lossy=True),
         ]
 
-        assert len(SerializationTarget.match(targets, None, None, True)) == 1
-        assert len(SerializationTarget.match(targets, None, None, False)) == 2
+        assert len(SerializationTarget.match(targets, None, None, False)) == 1
+        assert len(SerializationTarget.match(targets, None, None, True)) == 2
 
     def test_target_default_estimate_measures_the_object(self) -> None:
         """A serializer that does not measure its format falls back to the object size."""
@@ -1058,7 +1063,7 @@ class TestBase:
                 self,
                 instance,
                 target_type=None,
-                lossless=True,
+                allow_lossy=False,
                 scope=Open(),
                 annotation=None,
                 realm=None,
@@ -1360,7 +1365,7 @@ class ScopedSerializer(Serializer[float, str, PrivateScope]):
         self,
         instance: float,
         target_type: Any = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: Any = None,
         realm: Realm | None = None,
@@ -1409,7 +1414,7 @@ class ScopeRecordingSerializer(Serializer[float, str, Open]):
         self,
         instance: float,
         target_type: Any = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: Any = None,
         realm: Realm | None = None,
@@ -1437,7 +1442,7 @@ class RefusingSerializer(Serializer[float, str, Open]):
         self,
         instance: float,
         target_type: Any = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: Any = None,
         realm: Realm | None = None,
@@ -1515,7 +1520,7 @@ class TestContainerSerializer:
 
     def test_a_statement_list_uses_the_sql_serializer(self) -> None:
         """A list of statements still reaches the SQL serializer."""
-        written = serialize([sqla.text("select 1")], str, lossless=False)
+        written = serialize([sqla.text("select 1")], str, allow_lossy=True)
 
         assert "select 1" in cast(str, written).lower()
 
@@ -1525,7 +1530,7 @@ class TestContainerSerializer:
         register_serializer(driver)
 
         try:
-            written = serialize(1.5, lossless=False)
+            written = serialize(1.5, allow_lossy=True)
         finally:
             custom_serializers.remove(driver)
 
@@ -1538,7 +1543,7 @@ class TestContainerSerializer:
 
         try:
             with pytest.raises(UnsupportedTargetError, match="refused"):
-                serialize(1.5, str, lossless=False)
+                serialize(1.5, str, allow_lossy=True)
         finally:
             custom_serializers.remove(driver)
 
@@ -1548,7 +1553,7 @@ class TestContainerSerializer:
         register_serializer(driver)
 
         try:
-            serialize(1.5, str, lossless=False, scope=PrivateScope())
+            serialize(1.5, str, allow_lossy=True, scope=PrivateScope())
         finally:
             custom_serializers.remove(driver)
 
@@ -1566,9 +1571,7 @@ class Document:
     def __serialization_targets__(cls) -> list[SerializationTarget[Any, Open, Any]]:
         """Only plain text files are supported."""
         return [
-            SerializationTarget(
-                type=File[Literal["text/plain"], TextIO], scope=Open(), lossless=True
-            )
+            SerializationTarget(type=File[Literal["text/plain"], TextIO], scope=Open(), lossy=False)
         ]
 
     @classmethod
@@ -1586,7 +1589,7 @@ class Document:
     def __serialize__(
         self,
         target_type: Any = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: Any = None,
         realm: Realm | None = None,
@@ -1607,7 +1610,7 @@ class Document:
     def __estimate_serialized_size__(
         self,
         target_type: Any = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: Any = None,
     ) -> int:
@@ -1621,7 +1624,7 @@ class TestCoverageDetails:
     def test_unknown_estimate_target_reports_the_criteria(self) -> None:
         """An estimate for a target no serializer declares raises."""
         with pytest.raises(ValueError, match="No suitable serializer found"):
-            estimate_serialized_size(1 + 2j, File[Literal["text/csv"], TextIO], lossless=False)
+            estimate_serialized_size(1 + 2j, File[Literal["text/csv"], TextIO], allow_lossy=True)
 
     def test_read_text_refuses_a_non_text_source(self) -> None:
         """A value that is neither a file nor text is refused."""
@@ -1658,7 +1661,7 @@ class TestCoverageDetails:
         array = np.zeros(3)
 
         assert estimate_serialized_size(
-            array, File[Literal["text/csv"], TextIO], lossless=False
+            array, File[Literal["text/csv"], TextIO], allow_lossy=True
         ) == (array.nbytes)
 
     def test_source_types_are_widened(self) -> None:

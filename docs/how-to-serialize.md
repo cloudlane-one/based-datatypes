@@ -143,7 +143,7 @@ values serialize instead of failing halfway through the write.
 
 ## Choosing a format
 
-`get_serializers(typ, targets, scope, lossless)` returns the `(index, target, driver)` triples
+`get_serializers(typ, targets, scope, allow_lossy)` returns the `(index, target, driver)` triples
 that can handle an object, ordered by the position of the matching target — the caller's first
 target wins. It is what `serialize` and `deserialize` use internally, and it is the way to ask
 *which* serializer would be picked. Passing `value=` matches the instance against each driver's
@@ -165,7 +165,7 @@ Some formats reproduce the object exactly, others keep only a reduced representa
 serializer declares which of its MIME types round-trip, because one serializer can cover both:
 parquet keeps a dataframe's dtypes and values, CSV does not; PNG is lossless, JPEG is not.
 
-Pass `lossless=True` (the default) to require an exact round trip, `lossless=False` to accept a
+Pass `allow_lossy=False` (the default) to require an exact round trip, `allow_lossy=True` to accept a
 reduced one:
 
 ```python exec="on" session="serialize"
@@ -177,25 +177,24 @@ csv_target = File[Literal["text/csv"], TextIO]
 parquet_target = File[Literal["application/vnd.apache.parquet"], BinaryIO]
 
 
-def drivers(targets, lossless):
+def drivers(targets, allow_lossy):
     """Return the names of the serializers that accept the targets."""
     return ", ".join(
         type(driver).__name__
-        for _, _, driver in get_serializers(pd.DataFrame, targets, lossless=lossless)
+        for _, _, driver in get_serializers(pd.DataFrame, targets, allow_lossy=allow_lossy)
     )
 
 
-print(drivers([csv_target], lossless=True))
-print(drivers([csv_target], lossless=False))
-print(drivers([parquet_target], lossless=True))
+print(drivers([csv_target], allow_lossy=False))
+print(drivers([csv_target], allow_lossy=True))
+print(drivers([parquet_target], allow_lossy=False))
 ```
 
 Reading is not restricted this way: losslessness describes what an export can drop, so
 `deserialize` reads lossy formats as readily as lossless ones.
 
 A target that is not a file has no MIME type to declare, so a serializer states that case
-separately with `__lossless_values__`; SQL and HTML declare `False`, because their text target is
-the same lossy re-rendering as their file. Without a requested target the filter is not applied at
+separately with `__lossless_values__`; Without a requested target the filter is not applied at
 all — `serialize(obj)` takes the first format the serializer declares.
 
 ## Containers
@@ -230,7 +229,7 @@ leaves `S` out declares `Open`, which is why the built-in drivers are usable eve
 ```python exec="on" session="serialize"
 from based_datatypes.serialize import Open, get_serializers
 
-print(get_serializers(dt.datetime, [str], Open(), lossless=False) != [])
+print(get_serializers(dt.datetime, [str], Open(), allow_lossy=True) != [])
 ```
 
 The declaration is a class, not a value: a scope carries data (a process id, a subnet), and only
@@ -349,7 +348,7 @@ class PointSerializer(CommonSerializer[Point, str | PointFile]):
         self,
         instance: Point,
         target_type: object = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: object = None,
         realm: Realm | None = None,
@@ -426,7 +425,7 @@ class Document:
         """Only plain text is supported."""
         return [
             SerializationTarget(
-                type=File[Literal["text/plain"], TextIO], scope=Open(), lossless=True
+                type=File[Literal["text/plain"], TextIO], scope=Open(), allow_lossy=False
             )
         ]
 
@@ -445,7 +444,7 @@ class Document:
     def __serialize__(
         self,
         target_type: object = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: object = None,
         realm: Realm | None = None,
@@ -466,7 +465,7 @@ class Document:
     def __estimate_serialized_size__(
         self,
         target_type: object = None,
-        lossless: bool = True,
+        allow_lossy: bool = False,
         scope: TransportScope = Open(),
         annotation: object = None,
     ) -> int:
@@ -490,10 +489,8 @@ print(estimate_serialized_size(Document("hello"), File[Literal["text/plain"], Te
   target is opened, so a value the serializer rejects leaves the previous content intact.
 - **Object arrays are refused for `.npy`/`.npz`.** Writing them would require pickle and loading
   them would require `allow_pickle=True`; convert the array to a concrete dtype first.
-- **Losslessness is per format, not per serializer.** Asking for `lossless=True` with a CSV
+- **Losslessness is per format, not per serializer.** Asking for `allow_lossy=False` with a CSV
   target has no candidate even though the same serializer writes lossless parquet.
-- **A plain-value target can be lossy too.** SQL and HTML re-render the object, so
-  `serialize(soup, str)` needs `lossless=False` exactly like the `.html` file does.
 - **A missing pair raises `ValueError`.** `serialize` and `deserialize` name the object type, the
   target and the active scope in the message.
 
@@ -504,4 +501,3 @@ protocols, the scope classes and the shipped drivers are documented in the
 ([`base`](ref-python-api.md#based_datatypes.serialize.base),
 [`common`](ref-python-api.md#based_datatypes.serialize.common),
 [`local_fs`](ref-python-api.md#based_datatypes.serialize.local_fs)).
-
