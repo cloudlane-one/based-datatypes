@@ -5,13 +5,15 @@ from __future__ import annotations
 import io
 import shutil
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Generator, Iterator, Sequence, Set
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cached_property
 from mimetypes import guess_extension, guess_type
 from pathlib import Path
+from types import NoneType
 from typing import (
+    IO,
     Any,
     BinaryIO,
     Generic,
@@ -20,7 +22,6 @@ from typing import (
     TextIO,
     TypeVar,
     cast,
-    final,
     overload,
     override,
 )
@@ -73,29 +74,26 @@ for _extension, _mime in additional_mime.items():
     additional_mime_inv.setdefault(_mime, []).append(_extension)
 
 
-@final
-class Read:
-    """A marker class for read-only file."""
+type Read = Literal["r"]
+type Write = Literal["w"]
 
-
-@final
-class Write:
-    """A marker class for write-only file."""
-
+type UTF8 = Literal["utf-8"]
+type AutoEncoding = Literal["auto"]
 
 M = TypeVar("M", bound=LiteralString | str, covariant=True)
 
-I = TypeVar(  # noqa: E741
-    "I",
-    bound=TextIO | BinaryIO,
-    default=Any,
+E = TypeVar(
+    "E",
+    bound=LiteralString | None,
+    default=None,
+    covariant=True,
 )
 
 R = TypeVar("R", bound=Read | Write, contravariant=True, default=Read | Write)
 
 
 @dataclass(kw_only=True)
-class File(ABC, Runtyped, Generic[M, I, R]):
+class File(ABC, Runtyped, Generic[M, E, R]):
     """A generic, single file (may be within a file system or object storage)."""
 
     @prop(cached=True, mode="class")
@@ -106,21 +104,37 @@ class File(ABC, Runtyped, Generic[M, I, R]):
 
     @prop(cached=True, mode="class")
     @classmethod
-    def io_type(cls) -> TypeDef[I]:
-        """The IO type of the file."""
-        typeref = cls._typeref.typevar_map[I]
-        return cast(type[I], typeref.resolved_type_def)
+    def default_mime(cls) -> M:
+        """Default MIME type of the file."""
+        return cls.mimes[0]
 
     @prop(cached=True, mode="class")
     @classmethod
-    def read_write(cls) -> Literal["rw", "r", "w"]:
+    def encodings(cls) -> list[E]:
+        """The IO type of the file."""
+        typeref = cls._typeref.typevar_map[E]
+        if is_subtype(typeref.resolved_type_def, NoneType):
+            return []
+        return cast(list[E], list(typeref.literal_values))
+
+    @prop(cached=True, mode="class")
+    @classmethod
+    def default_encoding(cls) -> E | None:
+        """Default IO type of the file."""
+        encodings = cls.encodings
+        return encodings[0] if encodings else None
+
+    @prop(cached=True, mode="class")
+    @classmethod
+    def readable(cls) -> bool:
         """The read/write mode of the file."""
-        typeref = cls._typeref.typevar_map[R]
-        return (
-            "rw"
-            if typeref.is_supertype_of(Read | Write)
-            else "r" if typeref.is_supertype_of(Read) else "w"
-        )
+        return "r" in cls._typeref.typevar_map[R].literal_values
+
+    @prop(cached=True, mode="class")
+    @classmethod
+    def writable(cls) -> bool:
+        """The read/write mode of the file."""
+        return "w" in cls._typeref.typevar_map[R].literal_values
 
     @staticmethod
     def get_all_mimes(typedef: TypeDef[File]) -> list[str]:
@@ -140,81 +154,126 @@ class File(ABC, Runtyped, Generic[M, I, R]):
     mime: M | None = None
     """Explicit MIME type."""
 
-    io: TypeDef[I] | None = None
+    encoding: E | None = None
     """Explicit IO type."""
 
-    rw: Literal["rw", "r", "w"] | None = None
+    rw: Set[Literal["r", "w"]] | None = None
     """Explicit read/write mode."""
-
-    _suffix: str | None = None
-    """Explicit file suffix; ``None`` derives it from the MIME type."""
 
     def __post_init__(self) -> None:
         """Validate the file type parameters."""
-        if self.mime is not None:
-            self._typeref.typevar_map[M] = TypeRef(Literal[self.mime])
-        if self.io is not None:
-            self._typeref.typevar_map[I] = TypeRef(self.io)
-        if self.rw is not None:
-            self._typeref.typevar_map[R] = TypeRef(
-                Read | Write if self.rw == "rw" else Read if self.rw == "r" else Write
-            )
+        rw = []
+        if self.readable:
+            rw.append("r")
+        if self.writable:
+            rw.append("w")
 
-    @property
-    def default_mime(self) -> M:
-        """Default MIME type of the file."""
-        return self.mimes[0]
+        self.narrow_instance_type(
+            {
+                M: Literal[self.mime or self.default_mime],
+                E: Literal[self.encoding or self.default_encoding],
+                R: Literal[*(self.rw or rw)],
+            }
+        )
 
     @cached_property
     def extension(self) -> str:
         """Return the file extension, from the suffix or the MIME type."""
-        if self._suffix is not None:
-            return self._suffix
-
         ext = additional_mime_inv.get(self.default_mime, [None])[0]
         if ext is None:
             ext = guess_extension(self.default_mime, strict=False)
 
         if ext is None:
-            ext = ".txt" if is_subtype(self.io_type, TextIO) else ".bin"
+            ext = ".txt" if self.encoding is not None else ".bin"
 
         assert ext is not None, "Could not determine file extension"
         return ext
 
     @abstractmethod
-    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> I:
+    def get_io(self) -> IO[Any]:
         """Return the file's content as an IO stream."""
         ...
 
     @overload
-    def open(self: File[Any, Any, Read], mode: Literal["r"] = ...) -> I: ...
+    def open(self: File[Any, Any, Read]) -> TextIO: ...
 
     @overload
-    def open(self: File[Any, Any, Write], mode: Literal["w"] = ...) -> I: ...
+    def open(self: File[Any, Any, Write], mode: Literal["w"] = ...) -> BinaryIO: ...
 
     @overload
-    def open(self: File[Any, Any, Read | Write], mode: Literal["rw"] = ...) -> I: ...
+    def open(
+        self: File[Any, Any, Read | Write], mode: Literal["rw"] = ...
+    ) -> TextIO | BinaryIO: ...
 
     @contextmanager
-    def open(self, mode: Literal["rw", "r", "w"] = "rw") -> Generator[I]:
+    def open(self) -> Generator[TextIO | BinaryIO]:
         """Open the file and return its IO stream."""
-        io = self.get_io(mode)
+        io = self.get_io()
         try:
-            yield io
+            yield cast(TextIO | BinaryIO, io)
         finally:
             io.close()
 
-    def to_file_type(self) -> TypeDef[File[M, I, R]]:
-        """Return a TypeDef for this file type."""
-        return File[
-            cast(type[M], Literal[self.default_mime]),
-            cast(type[I], self.io_type),
-            Any,
-        ]
+    @overload
+    def read(self: File[Any, None, Read]) -> bytes: ...
+
+    @overload
+    def read(self: File[Any, LiteralString, Read]) -> str: ...
+
+    @overload
+    def read(self: File[Any, LiteralString | None, Read]) -> bytes | str: ...
+
+    def read(self) -> bytes | str:
+        """Read the file and return its content."""
+        with self.get_io() as io:
+            assert (
+                self.encoding is None
+                and isinstance(io, BinaryIO)
+                or self.encoding is not None
+                and isinstance(io, TextIO)
+            )
+            return io.read()
+
+    @overload
+    def write(self: File[Any, None, Write], content: bytes) -> None: ...
+
+    @overload
+    def write(self: File[Any, LiteralString, Write], content: str) -> None: ...
+
+    def write(self, content: bytes | str) -> None:
+        """Write content to the file."""
+        with self.get_io() as io:
+            assert (
+                self.encoding is None
+                and isinstance(io, BinaryIO)
+                or self.encoding is not None
+                and isinstance(io, TextIO)
+            )
+            io.write(content)  # pyright: ignore[reportArgumentType, reportCallIssue]
+
+    def __get_state__(self: File[Any, Any, Any]) -> dict[str, Any]:
+        """Return the state of the file for serialization."""
+        state = self.__dict__.copy()
+
+        if self.readable:
+            state["content"] = self.read()
+
+        return state
+
+    def __set_state__(self: File[Any, Any, Any], state: dict[str, Any]) -> None:
+        """Set the state of the file from serialization."""
+        if "content" in state:
+            if not self.writable:
+                raise TypeError("Cannot set content on a read-only file.")
+
+            self.write(state["content"])
+            del state["content"]
+
+        object.__setattr__(self, "__dict__", state)
 
 
 @dataclass
-class LocalFile(File[M, I, R]):
+class LocalFile(File[M, E, R]):
     """A generic, single file (may be within a file system or object storage)."""
 
     dir: LocalDir
@@ -235,12 +294,14 @@ class LocalFile(File[M, I, R]):
             or "application/octet-stream"
         )
         tags = tags_from_path(str(path)) if path.exists() else tags_from_filename(str(path))
-        io_type = TextIO if "text" in tags else BinaryIO
 
-        return LocalFile[cast(type[LiteralString], Literal[mime]), io_type, Any](
+        encoding = "utf-8" if "text" in tags else None
+
+        return LocalFile[Any, Any, Any](
             dir=LocalDir(path=dir_path),
             name=name,
-            _suffix=path.suffix,
+            encoding=encoding,
+            mime=mime,
         )
 
     @cached_property
@@ -249,46 +310,42 @@ class LocalFile(File[M, I, R]):
         return (self.dir.abs_path / (self.name + self.extension)).absolute()
 
     @cached_property
-    def detected_format(self) -> Literal["text", "binary"]:
+    def resolved_format(self) -> Literal["text", "binary"]:
         """Default encoding based on filename and content."""
         path = Path(self.path)
-        if not path.exists():
-            return "text" if is_subtype(self.io_type, TextIO) else "binary"
+        if self.default_encoding != "auto":
+            return "text" if self.default_encoding is not None else "binary"
 
         file_tags = tags_from_path(str(path))
         return "text" if "text" in file_tags else "binary"
 
-    def get_file_mode(
-        self, mode: Literal["rw", "r", "w"], encoding: Literal["text", "binary"]
-    ) -> str:
+    @cached_property
+    def file_mode(self) -> str:
         """Map the file mode to a string representation."""
-        if mode == "r":
-            return "rb" if encoding == "binary" else "r"
-        elif mode == "w":
-            return "wb" if encoding == "binary" else "w"
+        if self.readable and self.writable:
+            return "wb+" if self.resolved_format == "binary" else "w+"
+        elif self.writable:
+            return "wb" if self.resolved_format == "binary" else "w"
         else:
-            return "wb+" if encoding == "binary" else "w+"
+            return "rb" if self.resolved_format == "binary" else "r"
 
     @override
-    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> I:
+    def get_io(self) -> IO[Any]:
         """Return the file's content as a text IO stream.
 
         Text streams always use UTF-8 with newline translation disabled, so the
         bytes on disk do not depend on the platform or locale and match what the
         serialization size estimators measure.
         """
-        if is_subtype(self.io_type, TextIO):
-            return cast(
-                I,
-                open(
-                    self.path,
-                    mode=self.get_file_mode(mode, "text"),
-                    encoding="utf-8",
-                    newline="",
-                ),
+        if self.default_encoding is not None:
+            return open(
+                self.path,
+                mode=self.file_mode,
+                encoding=self.default_encoding,
+                newline="",
             )
 
-        return cast(I, open(self.path, mode=self.get_file_mode(mode, "binary")))
+        return open(self.path, mode=self.file_mode)
 
 
 class _TextMemoryStream(io.StringIO):
@@ -348,7 +405,7 @@ class _BinaryMemoryStream(io.BytesIO):
 
 
 @dataclass
-class MemoryFile(File[M, I, R]):
+class MemoryFile(File[M, E, R]):
     """A file whose content lives in memory instead of on a storage medium.
 
     Useful for tests, for staging content before it is written somewhere, and
@@ -362,10 +419,10 @@ class MemoryFile(File[M, I, R]):
     """Optional file name, used for display only."""
 
     def __post_init__(self) -> None:
-        """Normalize the content to the type implied by ``io_type``."""
+        """Normalize the content to the type implied by ``encoding``."""
         if self.content is None:
-            self.content = "" if is_subtype(self.io_type, TextIO) else b""
-        elif is_subtype(self.io_type, TextIO):
+            self.content = "" if self.encoding is not None else b""
+        elif self.encoding is not None:
             if not isinstance(self.content, str):
                 raise TypeError("A text file requires str content.")
         elif not isinstance(self.content, bytes):
@@ -374,40 +431,33 @@ class MemoryFile(File[M, I, R]):
     @cached_property
     def detected_format(self) -> Literal["text", "binary"]:
         """Return the format implied by the declared IO type."""
-        return "text" if is_subtype(self.io_type, TextIO) else "binary"
+        return "text" if self.encoding is not None else "binary"
 
     @override
-    def get_io(self, mode: Literal["rw", "r", "w"] = "rw") -> I:
+    def get_io(self) -> IO[Any]:
         """Return a stream over the file's content.
 
         Writes are stored back into :attr:`content` when the stream is closed.
         ``"w"`` and ``"rw"`` start from empty content, like a local file, while
         ``"r"`` starts from the current content and rejects writes.
         """
-        initial = self.content if mode == "r" else None
-        writable = mode != "r"
+        initial = self.content if self.readable else None
 
-        if is_subtype(self.io_type, TextIO):
-            return cast(
-                I,
-                _TextMemoryStream(
-                    self,
-                    cast(str, initial) if initial is not None else "",
-                    writable=writable,
-                ),
+        if self.encoding is not None:
+            return _TextMemoryStream(
+                self,
+                cast(str, initial) if initial is not None else "",
+                writable=self.writable,
             )
 
-        return cast(
-            I,
-            _BinaryMemoryStream(
-                self,
-                cast(bytes, initial) if initial is not None else b"",
-                writable=writable,
-            ),
+        return _BinaryMemoryStream(
+            self,
+            cast(bytes, initial) if initial is not None else b"",
+            writable=self.writable,
         )
 
 
-F = TypeVar("F", bound="File[Any, TextIO | BinaryIO]", covariant=True)
+F = TypeVar("F", bound="File", covariant=True)
 D = TypeVar("D", bound="Dir | None", covariant=True)
 
 

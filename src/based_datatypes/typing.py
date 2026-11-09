@@ -20,6 +20,7 @@ from typing import (
     Self,
     TypeAliasType,
     TypeGuard,
+    TypeIs,
     TypeVar,
     TypeVarTuple,
     Union,
@@ -1086,7 +1087,7 @@ class TypeRef(Generic[T]):  # noqa: UP046
         return TypeRef(subtype).is_subtype_of(self.runtime_type_def)
 
 
-def has_type[T](instance: Any, typedef: TypeForm[T] | TypeDef[T]) -> TypeGuard[T]:
+def has_type[T](instance: Any, typedef: TypeForm[T] | TypeDef[T]) -> TypeIs[T]:
     """Check if an instance is of a given type hint.
 
     Args:
@@ -1101,7 +1102,7 @@ def has_type[T](instance: Any, typedef: TypeForm[T] | TypeDef[T]) -> TypeGuard[T
 
 def is_subtype[T](
     subtype: TypeForm | TypeDef, supertype: TypeForm[T] | TypeDef[T]
-) -> TypeGuard[TypeForm[T]]:
+) -> TypeIs[TypeForm[T]]:
     """Check if a type hint is a subtype of another type hint.
 
     Args:
@@ -1112,6 +1113,28 @@ def is_subtype[T](
         ``True`` if ``subtype`` is a subtype of ``supertype``, ``False`` otherwise.
     """
     return TypeRef(subtype).is_subtype_of(supertype)
+
+
+def validated[T](typedef: TypeForm[T] | TypeDef[T], obj: Any) -> T:
+    """Validate an object against a type hint and return it if valid.
+
+    Args:
+        obj: The object to validate.
+        typedef: The type hint to validate against.
+
+    Returns:
+        The object if it is valid.
+
+    Raises:
+        TypeError: If the object is not valid for the given type hint.
+    """
+    typeref = TypeRef(typedef)
+    if not typeref.validate(obj):
+        raise TypeError(
+            f"Object {obj!r} of type {type(obj).__name__} is not valid "
+            f"for type {typeref.runtime_type_def}"
+        )
+    return cast(T, obj)
 
 
 @final
@@ -1195,3 +1218,21 @@ class Runtyped:
         )
         origin._generic_subclasses[full_args] = subclass
         return subclass
+
+    def narrow_instance_type(self, typevar_map: dict[TypeVar | TypeVarTuple, TypeDef]) -> None:
+        """Set the type of this instance to a subclass of its current type.
+
+        Args:
+            typevar_map: A mapping of type variables to their concrete types.
+
+        Raises:
+            TypeError: If ``cls`` is not a subclass of the current type.
+        """
+        new_cls = TypeRef(self.__origin__, subs=typevar_map).runtime_type_def
+        assert isinstance(new_cls, type)
+        if not issubclass(new_cls, self.__class__):
+            raise TypeError(
+                f"Cannot narrow instance type to {new_cls}, "
+                f"which is not a subclass of {self.__class__}"
+            )
+        self.__class__ = new_cls

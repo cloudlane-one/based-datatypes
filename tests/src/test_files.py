@@ -260,7 +260,7 @@ class TestGetFileMode:
         """Every mode maps to the matching builtin mode."""
         file = make_file(workdir, "f", "text/plain")
 
-        assert file.get_file_mode(mode, encoding) == expected  # pyright: ignore[reportArgumentType]
+        assert file.file_mode(mode, encoding) == expected  # pyright: ignore[reportArgumentType]
 
 
 class TestLocalFileIO:

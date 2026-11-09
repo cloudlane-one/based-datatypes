@@ -1200,10 +1200,10 @@ class TestLocalFS:
 
     def test_non_container_node_is_refused(self, tmp_path: Path) -> None:
         """A node that is neither a dictionary nor a list cannot be a directory."""
-        from based_datatypes.serialize.local_fs import _write_node
+        from based_datatypes.serialize.local_fs import _write_container
 
         with pytest.raises(TypeError, match="not a directory node"):
-            _write_node(cast(Any, "text"), tmp_path / "out")
+            _write_container(cast(Any, "text"), tmp_path / "out")
 
     def test_suffix_without_a_dot(self) -> None:
         """A suffix that does not start with a dot is separated from the name."""

@@ -3,10 +3,10 @@
 A serialized dictionary mixes JSON-supported primitives with files and nested
 containers. This module turns such a dictionary into a directory tree and back:
 
-* primitives are collected in a ``__index__.yaml`` file inside the directory,
+* primitives are collected in a ``.index.yaml`` file inside the directory,
 * files are written next to it, named by their key,
 * nested dictionaries and lists become sub-directories named by their key,
-* the ``__index__.yaml`` of a list directory holds a YAML list, with ``None`` at
+* the ``.index.yaml`` of a list directory holds a YAML list, with ``None`` at
   the positions taken by files or sub-directories, and the files in that
   directory are named by their position.
 """
@@ -15,16 +15,15 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, cast
+from typing import Any, final
 
 import yaml
 
 from based_datatypes.files import File, LocalDir, LocalFile, ensure_dir_exists
+from based_datatypes.typing import has_type
 
-from .base import SerializedDict, SerializedValue
-
-INDEX_FILENAME = "__index__.yaml"
-"""Name of the YAML file that holds the primitive values of a directory."""
+from .base import Primitive, PrimitiveContainer, Scalar, Serialized, SerializedContainer
+from .common import YamlDumper, YamlLoader
 
 
 def _entry_name(key: str) -> str:
@@ -52,14 +51,14 @@ def _entry_name(key: str) -> str:
         or "/" in key
         or "\\" in key
         or "\x00" in key
-        or key == "__index__"
+        or key == ".index"
         or PurePosixPath(key).name != key
         or windows.name != key
         or bool(windows.drive)
     ):
         raise ValueError(
             f"{key!r} is not a valid entry name; a key must be one path component "
-            "and must not be '__index__'."
+            "and must not be '.index'."
         )
 
     return key
@@ -80,7 +79,7 @@ def _remove_previous(directory: Path, key: str, *, keep_directory: bool = False)
             value written now is itself a container.
     """
     for entry in directory.iterdir():
-        if entry.name == INDEX_FILENAME:
+        if entry.name == ".index.yaml":
             continue
 
         if entry.is_dir():
@@ -90,127 +89,96 @@ def _remove_previous(directory: Path, key: str, *, keep_directory: bool = False)
             entry.unlink()
 
 
-def _index_path(directory: Path) -> Path:
-    """Return the path of the index file of a directory."""
-    return directory / INDEX_FILENAME
-
-
-def _read_index(directory: Path) -> Any:
+def _read_index(directory: Path) -> PrimitiveContainer:
     """Read the index file of a directory."""
-    path = _index_path(directory)
+    index_path = directory / ".index.yaml"
 
-    if not path.exists():
+    if not index_path.exists():
         return {}
 
     # ``safe_load`` refuses to construct arbitrary Python objects.
-    with path.open("r", encoding="utf-8", newline="") as stream:
-        return yaml.safe_load(stream)
+    with index_path.open("r", encoding="utf-8", newline="") as stream:
+        return yaml.load(stream, Loader=YamlLoader)
 
 
-def _write_index(directory: Path, index: Any) -> None:
+def _write_index(directory: Path, index: PrimitiveContainer) -> None:
     """Write the index file of a directory."""
-    text = yaml.safe_dump(index, allow_unicode=True)
-
-    with _index_path(directory).open("w", encoding="utf-8", newline="") as stream:
-        stream.write(text)
+    with (directory / ".index.yaml").open("w", encoding="utf-8", newline="") as stream:
+        yaml.dump(index, stream, Dumper=YamlDumper, default_flow_style=False, allow_unicode=True)
 
 
-def _read_content(source: File) -> bytes | str:
-    """Read the content of a serialized file.
-
-    The content is read before any entry of the tree is removed, so rewriting a
-    tree with files it already holds (``write_structure(read_structure(path),
-    path)``) cannot delete a source it still has to copy.
-
-    Args:
-        source: The file to read.
-
-    Returns:
-        The text or bytes the file holds.
-    """
-    with source.open("r") as stream:
-        return stream.read()
+@final
+class Written:
+    """Signal that a value was written to disk."""
 
 
-def _write_content(content: bytes | str, destination: Path) -> None:
-    """Write read content to a local path.
+def _write_node(value: Serialized, name: str, directory: LocalDir) -> Scalar | Written:
+    if has_type(value, SerializedContainer):
+        _remove_previous(directory.abs_path, name, keep_directory=True)
+        _write_container(value, LocalDir(directory.abs_path / name))
+        return Written()
+    elif has_type(value, LocalFile):
+        # A LocalFile is already on disk, so we can just copy it to the right place.
+        _remove_previous(directory.abs_path, name)
+        shutil.copy(value.path, directory.abs_path / name)
+        return Written()
+    elif has_type(value, File):
+        content = value.read()
+        _remove_previous(directory.abs_path, name)
+        LocalFile(directory, name, mime=value.default_mime, encoding=value.default_encoding).write(
+            content
+        )
+        return Written()
 
-    Args:
-        content: The text or bytes to write.
-        destination: The path to write to.
-    """
-    ensure_dir_exists(destination.parent)
+    _remove_previous(directory.abs_path, name)
+    return value
 
-    if isinstance(content, str):
-        with destination.open("w", encoding="utf-8", newline="") as target:
-            target.write(content)
+
+def _write_container(container: Serialized, directory: LocalDir) -> None:
+    """Write one dictionary or list/tuple/set/frozenset as a directory."""
+    ensure_dir_exists(directory.abs_path)
+
+    if has_type(container, dict[str, Serialized]):
+        _write_mapping(container, directory)
+    elif has_type(container, SerializedContainer):
+        _write_sequence(container, directory)
     else:
-        with destination.open("wb") as target:
-            target.write(cast(bytes, content))
+        raise TypeError(
+            f"{type(container).__name__} is not a directory node; only dicts and lists are."
+        )
 
 
-def _extension(file: File) -> str:
-    """Return the suffix a serialized file is stored under, including the dot."""
-    extension = file.extension
-
-    return extension if extension.startswith(".") or extension == "" else f".{extension}"
-
-
-def _write_node(node: SerializedValue, directory: Path) -> None:
-    """Write one dictionary or list as a directory."""
-    ensure_dir_exists(directory)
-
-    if isinstance(node, dict):
-        _write_mapping(node, directory)
-    elif isinstance(node, list):
-        _write_sequence(node, directory)
-    else:
-        raise TypeError(f"{type(node).__name__} is not a directory node; only dicts and lists are.")
-
-
-def _write_mapping(mapping: SerializedDict, directory: Path) -> None:
+def _write_mapping(mapping: dict[str, Serialized], directory: LocalDir) -> None:
     """Write a dictionary as a directory, keeping primitives in the index file."""
-    index: dict[str, Any] = {}
+    index: dict[str, Primitive] = {}
 
     for key, value in mapping.items():
         name = _entry_name(key)
+        res = _write_node(value, name, directory)
+        if not isinstance(res, Written):
+            index[name] = res
 
-        if isinstance(value, File):
-            content = _read_content(value)
-            _remove_previous(directory, name)
-            _write_content(content, directory / f"{name}{_extension(value)}")
-        elif isinstance(value, dict | list):
-            _remove_previous(directory, name, keep_directory=True)
-            _write_node(value, directory / name)
-        else:
-            _remove_previous(directory, name)
-            index[name] = value
-
-    _write_index(directory, index)
+    _write_index(directory.abs_path, index)
 
 
-def _write_sequence(items: list[SerializedValue], directory: Path) -> None:
+def _write_sequence(
+    items: list[Serialized] | tuple[Serialized, ...] | set[Serialized] | frozenset[Serialized],
+    directory: LocalDir,
+) -> None:
     """Write a list as a directory, naming files and sub-directories by position."""
-    index: list[Any] = []
+    index: list[Primitive] = []
 
     for position, value in enumerate(items):
-        if isinstance(value, File):
-            content = _read_content(value)
-            _remove_previous(directory, str(position))
-            _write_content(content, directory / f"{position}{_extension(value)}")
-            index.append(None)
-        elif isinstance(value, dict | list):
-            _remove_previous(directory, str(position), keep_directory=True)
-            _write_node(value, directory / str(position))
-            index.append(None)
+        res = _write_node(value, str(position), LocalDir(directory.abs_path / str(position)))
+        if not isinstance(res, Written):
+            index.append(res)
         else:
-            _remove_previous(directory, str(position))
-            index.append(value)
+            index.append(None)
 
-    _write_index(directory, index)
+    _write_index(directory.abs_path, index)
 
 
-def write_structure(structure: SerializedDict, path: Path | str) -> LocalDir:
+def write_structure(structure: dict[str, Serialized], path: Path | str) -> LocalDir:
     """Write a serialized dictionary into a local directory tree.
 
     The directory is created when it does not exist. Entries are overwritten by
@@ -232,15 +200,15 @@ def write_structure(structure: SerializedDict, path: Path | str) -> LocalDir:
             the directory index.
     """
     directory = ensure_dir_exists(path)
-    _write_node(structure, directory)
+    _write_container(structure, LocalDir(directory))
 
     return LocalDir(path=directory)
 
 
-def _load_entry(path: Path) -> SerializedValue:
+def _load_entry(path: Path) -> Serialized:
     """Load one file or sub-directory of a directory tree."""
     if path.is_dir():
-        return _read_node(path)
+        return _read_dir(path)
 
     return LocalFile.from_path(path)
 
@@ -253,15 +221,15 @@ def _position(entry: Path) -> int | None:
         return None
 
 
-def _read_node(directory: Path) -> SerializedValue:
+def _read_dir(directory: Path) -> Serialized:
     """Read one directory back into a dictionary or a list."""
     index = _read_index(directory)
 
-    if isinstance(index, list):
-        items = list(index)
+    if isinstance(index, list | tuple | set | frozenset):
+        items: list = list(index)
 
         for entry in directory.iterdir():
-            if entry.name == INDEX_FILENAME:
+            if entry.name == ".index.yaml":
                 continue
 
             position = _position(entry)
@@ -274,10 +242,10 @@ def _read_node(directory: Path) -> SerializedValue:
 
         return items
 
-    mapping: SerializedDict = dict(index) if isinstance(index, dict) else {}
+    mapping: dict[str, Any] = dict(index) if isinstance(index, dict) else {}
 
     for entry in directory.iterdir():
-        if entry.name == INDEX_FILENAME:
+        if entry.name == ".index.yaml":
             continue
 
         # A sub-directory is named by its whole key, a file by its key plus the
@@ -294,10 +262,10 @@ def _read_node(directory: Path) -> SerializedValue:
     return mapping
 
 
-def read_structure(path: Path | str) -> SerializedDict:
+def read_structure(path: Path | str) -> dict[str, Serialized]:
     """Read a local directory tree back into a serialized dictionary.
 
-    Primitive values come from ``__index__.yaml``, files are returned as
+    Primitive values come from ``.index.yaml``, files are returned as
     :class:`LocalFile` handles, and sub-directories are read recursively.
 
     Args:
@@ -306,12 +274,9 @@ def read_structure(path: Path | str) -> SerializedDict:
     Returns:
         The serialized dictionary stored in the directory.
     """
-    structure = _read_node(Path(path).absolute())
+    structure = _read_dir(Path(path).absolute())
 
     if not isinstance(structure, dict):
         raise TypeError(f"{path} holds a list, not a dictionary.")
 
     return structure
-
-
-__all__ = ["INDEX_FILENAME", "read_structure", "write_structure"]

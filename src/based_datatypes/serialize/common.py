@@ -3,41 +3,54 @@
 from __future__ import annotations
 
 import base64
+import copyreg
 import datetime as dt
 import io
 import json
 import pickle
 import uuid
 import xml.etree.ElementTree as xml  # noqa: N813
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Callable, Mapping, Sequence, Set
 from dataclasses import fields, is_dataclass
 from decimal import Decimal
 from enum import Enum
+from fractions import Fraction
+from functools import partial
 from pathlib import Path
-from typing import Any, BinaryIO, Literal, TextIO, TypeVar, cast, get_origin, override
+from typing import (
+    Any,
+    BinaryIO,
+    Final,
+    Literal,
+    TextIO,
+    TypeVar,
+    cast,
+    final,
+    get_origin,
+    override,
+)
 
 import polars as pl
 import sqlparse
 import yaml
+from typing_extensions import Sentinel
 
 from based_datatypes.files import File
 from based_datatypes.types import DataclassInstance, TypeDef
-from based_datatypes.typing import TypeRef, has_type, is_subtype
+from based_datatypes.typing import TypeRef, has_type, is_subtype, validated
 
 from .base import (
     Backend,
-    JSONDict,
-    JSONScalar,
-    JSONValue,
     Memory,
     Open,
+    Scalar,
     Serialized,
     SerializedDict,
-    SerializedValue,
     Serializer,
     TransportScope,
     UnsupportedTargetError,
+    deserialize,
     register_serializer,
     serialize,
 )
@@ -49,7 +62,7 @@ T = TypeVar("T", bound=Serialized)
 # Helper functions:
 
 
-def _read_text(source: SerializedValue) -> str:
+def _read_text(source: Serialized) -> str:
     """Read text from a file, or pass text through unchanged."""
     if isinstance(source, File):
         with source.open("r") as stream:
@@ -61,26 +74,7 @@ def _read_text(source: SerializedValue) -> str:
     raise TypeError(f"Expected a text file or a string, got {type(source).__name__}.")
 
 
-def _write_text(target: File[Any, Any, Any], text: str) -> None:
-    """Write text into a file target."""
-    with target.open("w") as stream:
-        stream.write(text)
-
-
-def _read_json_value(source: JSONValue | JSONFile) -> JSONValue:
-    """Read JSON-shaped data from a file, or pass a value through unchanged."""
-    if not isinstance(source, File):
-        return source
-
-    with source.open("r") as stream:
-        if source.default_mime == "application/yaml":
-            # ``safe_load`` refuses to construct arbitrary Python objects.
-            return cast(JSONValue, yaml.safe_load(stream))
-
-        return cast(JSONDict, json.load(stream))
-
-
-def _require_file(source: SerializedValue, serializer: str) -> File:
+def _require_file(source: Serialized, serializer: str) -> File:
     """Return the source as a file, or refuse a source that is not one."""
     if isinstance(source, File):
         return source
@@ -90,8 +84,115 @@ def _require_file(source: SerializedValue, serializer: str) -> File:
 
 # JSON / YAML
 
+type JSONScalar = str | int | float | bool | None
+type JSONDict = dict[str, JSONValue]
+type JSONValue = JSONScalar | JSONDict | list[JSONValue]
 type JSONFile = (
     File[Literal["application/json"], TextIO] | File[Literal["application/yaml"], TextIO]
+)
+
+
+def scalar_to_json(scalar: Scalar) -> JSONValue:  # noqa: C901
+    """Convert a scalar to a JSON-supported value, or a JSON-shaped dictionary."""
+    match scalar:
+        case str() | int() | float() | bool() | None:
+            return scalar
+        case Decimal():
+            return {"$dec": str(scalar)}
+        case Fraction():
+            return {"$frac": [scalar.numerator, scalar.denominator]}
+        case complex():
+            return {"$complex": [scalar.real, scalar.imag]}
+        case bytes():
+            return {"$bytes": base64.b64encode(bytes(scalar)).decode("ascii")}
+        case bytearray():
+            return {"$bytearray": base64.b64encode(bytes(scalar)).decode("ascii")}
+        case dt.datetime():
+            return {"$dt": scalar.isoformat()}
+        case dt.date():
+            return {"$date": scalar.isoformat()}
+        case dt.time():
+            return {"$time": scalar.isoformat()}
+        case dt.timedelta():
+            return {"$timedelta": scalar.total_seconds()}
+        case uuid.UUID():
+            return {"$uuid": str(scalar)}
+        case Path():
+            return {"$path": str(scalar)}
+
+
+class YamlDumper(yaml.Dumper):
+    """YAML dumper supporting all primitive types, including decimals and UUIDs."""
+
+
+YamlDumper.add_representer(
+    Decimal, lambda dumper, value: dumper.represent_scalar("!dec", str(value))
+)
+YamlDumper.add_representer(
+    Fraction,
+    lambda dumper, value: dumper.represent_sequence("!frac", [value.numerator, value.denominator]),
+)
+YamlDumper.add_representer(
+    uuid.UUID, lambda dumper, value: dumper.represent_scalar("!uuid", str(value))
+)
+YamlDumper.add_representer(Path, lambda dumper, value: dumper.represent_scalar("!path", str(value)))
+
+
+@final
+class NotResolved:
+    """A sentinel for signalling that a (de)serialization attempt did not resolve a value."""
+
+
+def json_to_scalar(value: JSONValue) -> Scalar | NotResolved:  # noqa: C901
+    """Convert a JSON-supported value or a JSON-shaped dictionary to a scalar."""
+    if isinstance(value, dict):
+        if "$dec" in value:
+            return Decimal(validated(str, value["$dec"]))
+        if "$frac" in value:
+            numerator, denominator = validated(tuple[int, int], value["$frac"])
+            return Fraction(numerator, denominator)
+        if "$complex" in value:
+            real, imag = validated(tuple[float, float], value["$complex"])
+            return complex(real, imag)
+        if "$bytes" in value:
+            return base64.b64decode(validated(str, value["$bytes"]).encode("ascii"))
+        if "$bytearray" in value:
+            return bytearray(base64.b64decode(validated(str, value["$bytearray"]).encode("ascii")))
+        if "$dt" in value:
+            return dt.datetime.fromisoformat(validated(str, value["$dt"]))
+        if "$date" in value:
+            return dt.date.fromisoformat(validated(str, value["$date"]))
+        if "$time" in value:
+            return dt.time.fromisoformat(validated(str, value["$time"]))
+        if "$timedelta" in value:
+            return dt.timedelta(seconds=validated(float, value["$timedelta"]))
+        if "$uuid" in value:
+            return uuid.UUID(validated(str, value["$uuid"]))
+        if "$path" in value:
+            return Path(validated(str, value["$path"]))
+
+    return NotResolved()
+
+
+class YamlLoader(yaml.FullLoader):
+    """YAML loader supporting all primitive types, including decimals and UUIDs."""
+
+
+YamlLoader.add_constructor(
+    "!dec",
+    lambda loader, node: Decimal(loader.construct_scalar(validated(yaml.ScalarNode, node))),
+)
+YamlLoader.add_constructor(
+    "!frac",
+    lambda loader, node: Fraction(*loader.construct_sequence(validated(yaml.SequenceNode, node))),
+)
+YamlLoader.add_constructor(
+    "!uuid",
+    lambda loader, node: uuid.UUID(loader.construct_scalar(validated(yaml.ScalarNode, node))),
+)
+YamlLoader.add_constructor(
+    "!path",
+    lambda loader, node: Path(loader.construct_scalar(validated(yaml.ScalarNode, node))),
 )
 
 
@@ -1037,6 +1138,76 @@ except ImportError:
 
 type PickleFile = File[Literal["application/pickle"], BinaryIO]
 
+type ReduceTuple = tuple[Callable[..., Any], tuple[Any, ...]]
+"""A pickle reduce value: (rebuild_callable, args)."""
+
+# Types the default pickler handles natively. Only the pure-Python pickler
+# exposes this table; the C-accelerated Pickler hides it.
+_DISPATCH: Final[dict[type[Any], Callable[[pickle.Pickler, Any], None]]] = (
+    pickle._Pickler.dispatch  # type: ignore[attr-defined]  # noqa: SLF001
+)
+
+
+class SerializePickler(pickle.Pickler):
+    """Pickler that routes unpicklable leaf objects to `fallback`."""
+
+    def __init__(  # noqa: D107
+        self,
+        file: BinaryIO,
+        protocol: int | None = None,
+        fix_imports: bool = True,
+        buffer_callback: Callable[[pickle.PickleBuffer], Any] | None = None,
+    ) -> None:
+        super().__init__(file, protocol, fix_imports, buffer_callback)
+        # Per-type probe verdicts. Kept per-instance: probes use the default
+        # protocol, so verdicts must not leak across picklers.
+        self._picklable_types: set[type[Any]] = set()
+        self._unpicklable_types: set[type[Any]] = set()
+
+    def serialize(self, obj: object) -> ReduceTuple:
+        """Handle an unpicklable leaf object via `serialize`."""
+        return (partial(deserialize, annotation=type(obj)), (serialize(obj),))
+
+    @override
+    def reducer_override(self, obj: Any, /) -> Any:
+        t: type[Any] = type(obj)
+        # 1. Natively handled -> never probe, never touch.
+        if t in _DISPATCH or t in copyreg.dispatch_table:
+            return NotImplemented
+        # 2. Cached per-type verdicts.
+        if t in self._picklable_types:
+            return NotImplemented
+        if t in self._unpicklable_types:
+            return self.serialize(obj)
+        # 3. Decomposable (custom reduce / __dict__) -> let pickle recurse;
+        #    failing contents are caught individually, deeper down.
+        if (
+            t.__reduce_ex__ is not object.__reduce_ex__
+            or t.__reduce__ is not object.__reduce__
+            or hasattr(obj, "__dict__")
+        ):
+            return NotImplemented
+        # 4. Opaque leaf of unknown type -> probe once per type, cache verdict.
+        if self._probe(obj):
+            self._picklable_types.add(t)
+            return NotImplemented
+        self._unpicklable_types.add(t)
+        return self.serialize(obj)
+
+    @staticmethod
+    def _probe(obj: object) -> bool:
+        """Return True if the default pickler can serialize `obj`.
+
+        Catches Exception broadly on purpose: any failure mode (TypeError,
+        PicklingError, AttributeError from a broken __reduce__, ...) means
+        the object needs the fallback.
+        """
+        try:
+            pickle.dumps(obj)
+        except Exception:
+            return False
+        return True
+
 
 class PickleSerializer(Serializer[Any, PickleFile, Open]):
     """Serializer for Pickle files.
@@ -1073,7 +1244,7 @@ class PickleSerializer(Serializer[Any, PickleFile, Open]):
         target = self._file_target(target_type, file_factory)
 
         with target.open("w") as stream:
-            pickle.dump(instance, cast(BinaryIO, stream))
+            SerializePickler(stream).dump(instance)
 
         return target
 
@@ -1113,7 +1284,7 @@ class PickleSerializer(Serializer[Any, PickleFile, Open]):
 
 
 class PrimitiveSerializer(Serializer[V, T, Open]):
-    """Shared handling for serializers that map onto a JSON-supported value."""
+    """Shared handling for primitive types."""
 
     @abstractmethod
     def _encode(self, instance: V) -> T:

@@ -8,18 +8,24 @@ from collections.abc import Collection, Generator, Iterable
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
+from fractions import Fraction
+from pathlib import Path
 from typing import (
     Any,
     BinaryIO,
     Generic,
     Literal,
     Protocol,
+    Self,
     TextIO,
     TypeVar,
     cast,
     override,
     runtime_checkable,
 )
+from uuid import UUID
 
 from based_datatypes.descriptors import prop
 from based_datatypes.files import File, I, MemoryFile, Write
@@ -115,30 +121,38 @@ class UnsupportedTargetError(ValueError):
     """
 
 
-type JSONScalar = str | int | float | bool | None
-"""A value JSON represents directly."""
+type Scalar = (
+    None
+    | bool
+    | int
+    | float
+    | Decimal
+    | Fraction
+    | complex
+    | str
+    | bytes
+    | bytearray
+    | datetime
+    | date
+    | time
+    | timedelta
+    | UUID
+    | Path
+)
+type PrimitiveContainer = dict[str, Primitive] | tuple[Primitive, ...] | list[Primitive] | set[
+    Primitive
+] | frozenset[Primitive]
+type Primitive = Scalar | PrimitiveContainer
 
-type JSONDict = dict[str, JSONValue]
-"""A JSON object."""
-
-type JSONValue = JSONScalar | JSONDict | list[JSONValue]
-"""Any value a JSON document can hold."""
-
-type SerializedValue = JSONScalar | SerializedDict | list[SerializedValue] | File
-"""A serialized value: JSON-shaped data or a file, nested at any depth."""
-
-type SerializedDict = dict[str, SerializedValue]
-"""A serialized object: JSON-shaped data or files, keyed by name."""
-
-type Serialized = JSONScalar | dict[str, Any] | list[Any] | File
-"""Upper bound of everything a serializer may produce or consume.
-
-The containers hold ``Any`` rather than :data:`SerializedValue`, so a specific
-serialized artifact (``list[float]``, ``dict[str, str]``, ...) fits the bound
-despite the invariance of the container type parameters.
-"""
+type SerializedScalar = Scalar | File
+type SerializedContainer = dict[str, Serialized] | tuple[Serialized, ...] | list[Serialized] | set[
+    Serialized
+] | frozenset[Serialized]
+type Serialized = SerializedScalar | SerializedContainer
 
 
+V = TypeVar("V")
+V2 = TypeVar("V2")
 T = TypeVar("T", bound=Serialized)
 T2 = TypeVar("T2", bound=Serialized)
 S = TypeVar("S", bound=TransportScope, default=Open, contravariant=True)
@@ -146,23 +160,17 @@ L = TypeVar("L", bound=bool, default=Literal[False])
 
 
 @dataclass(frozen=True)
-class SerializationTarget(Generic[T, S, L]):
+class SerializationTarget(Generic[V, T, S, L]):
     """A set of supported serialization formats."""
 
-    obj_type: TypeDef
+    obj_type: TypeDef[V]
     """The type of the object being serialized."""
 
     tgt_type: type[T]
     """The type of the target format."""
 
-    scope: type[S] | S
-    """The scope this target format is declared for.
-
-    A serializer's type argument names the scope class, while an explicit target
-    declaration may carry a scope value; :meth:`TransportScope.match` accepts
-    either. The requested scope of an operation is applied to the target when it
-    is dispatched, so this field only ever describes the declaration.
-    """
+    scope: type[S]
+    """The scope this target format is declared for."""
 
     lossy: L
     """Whether this target format is lossy."""
@@ -178,11 +186,11 @@ class SerializationTarget(Generic[T, S, L]):
 
     @staticmethod
     def match(
-        targets: Iterable[SerializationTarget[Any, Any, Any]],
+        targets: Iterable[SerializationTarget[Any, Any, Any, Any]],
         types: Collection[TypeDef[Serialized]] | None = None,
         scope: TransportScope | None = None,
         allow_lossy: bool = False,
-    ) -> list[SerializationTarget[T, S, L]]:
+    ) -> list[SerializationTarget[V, T, S, L]]:
         """Return the subset of targets that match any of the given types.
 
         Args:
@@ -195,7 +203,7 @@ class SerializationTarget(Generic[T, S, L]):
             The list of matching serialization targets.
         """
         return cast(
-            list[SerializationTarget[T, S, L]],
+            list[SerializationTarget[V, T, S, L]],
             [
                 t
                 for t in targets
@@ -210,21 +218,23 @@ class SerializationTarget(Generic[T, S, L]):
         )
 
 
-current_ser_ctx: ContextVar[
-    tuple[SerializationTarget[SerializedDict, Open, bool], Backend] | None
-] = ContextVar(
-    "current_ser_ctx",
-    default=None,
+current_ser_ctx: ContextVar[tuple[SerializationTarget, TransportScope, Backend] | None] = (
+    ContextVar(
+        "current_ser_ctx",
+        default=None,
+    )
 )
 """The current serialization context: (serialization target, realm)."""
 
 
 @contextmanager
 def serialization_context(
-    target: SerializationTarget[Any, Any, Any], realm: Backend = Memory()
+    target: SerializationTarget[Any, Any, Any, Any],
+    scope: TransportScope = Open(),
+    backend: Backend = Memory(),
 ) -> Generator[None]:
     """Context manager to set the current serialization context."""
-    token = current_ser_ctx.set((target, realm))
+    token = current_ser_ctx.set((target, scope, backend))
     try:
         yield
     finally:
@@ -232,21 +242,21 @@ def serialization_context(
 
 
 @runtime_checkable
-class Serializable(Protocol[T, S]):  # pyright: ignore[reportInvalidTypeVarUse]
+class Serializable(Protocol[T, S, L]):  # pyright: ignore[reportInvalidTypeVarUse]
     """Protocol for classes that can serialize and deserialize themselves."""
 
     @classmethod
-    def __serialization_targets__(cls) -> list[SerializationTarget[T, S, Any]]:
+    def __serialization_targets__(cls) -> list[SerializationTarget[Self, T, S, L]]:
         """Serialization targets supported by this class."""
         ...
 
     @classmethod
     def __deserialize__(
-        cls: type[U],
+        cls,
         source: Serialized,
         scope: S = Open(),
-        annotation: TypeDef[U] | None = None,
-    ) -> U:
+        annotation: TypeDef[Self] | None = None,
+    ) -> Self:
         """Deserialize from the source type or format.
 
         Args:
@@ -260,13 +270,13 @@ class Serializable(Protocol[T, S]):  # pyright: ignore[reportInvalidTypeVarUse]
         ...
 
     def __serialize__(
-        self: Serializable[T2],
-        target_type: TypeDef[T2],
+        self,
+        target_type: TypeDef[T],
         allow_lossy: bool = False,
         scope: S = Open(),
-        annotation: TypeDef[Serializable[T2]] | None = None,
+        annotation: TypeDef[Serializable[T, Any, Any]] | None = None,
         backend: Backend = Memory(),
-    ) -> T2:
+    ) -> T:
         """Serialize to the target type or format.
 
         Args:
@@ -282,11 +292,11 @@ class Serializable(Protocol[T, S]):  # pyright: ignore[reportInvalidTypeVarUse]
         ...
 
     def __estimate_serialized_size__(
-        self: Serializable[T2],
-        target_type: TypeDef[T2],
+        self,
+        target_type: TypeDef[T],
         allow_lossy: bool = False,
         scope: S = Open(),
-        annotation: TypeDef[Serializable[T2]] | None = None,
+        annotation: TypeDef[Serializable[T, Any, Any]] | None = None,
     ) -> int:
         """Estimate the byte size of serializing this object to ``target_type``.
 
@@ -302,83 +312,70 @@ class Serializable(Protocol[T, S]):  # pyright: ignore[reportInvalidTypeVarUse]
         ...
 
 
-V = TypeVar("V")
-V2 = TypeVar("V2")
-U = TypeVar("U", bound="Serializable")
-
-
 @dataclass
-class Serializer(ABC, Runtyped, Generic[V, T, S]):  # noqa: UP046
+class Serializer(ABC, Runtyped, Generic[V, T, S, L]):  # noqa: UP046
     """A class representing a serialization driver for a specific type."""
 
     @prop(cached=True, mode="class")
-    def obj_type(self) -> TypeDef[V]:
-        """Return the type of object this serializer handles."""
-        return self._typeref.typevar_map[V].resolved_type_def
-
-    __lossless_mimes__: frozenset[str] = frozenset()
-    """MIME types this serializer round-trips exactly; empty marks every file format lossy."""
-
-    __lossless_values__: bool = True
-    """Whether the serializer's non-file targets round-trip the object exactly.
-
-    A value target is the same encoding as the file target of the same format,
-    so a serializer whose text output is lossy — SQL and HTML re-render the
-    object rather than reproducing it — declares ``False`` here as well.
-    """
-
     @classmethod
-    def lossless_target(cls, filetype: type[File]) -> bool:
-        """Whether a target format round-trips the object exactly.
-
-        A file target does exactly when all of its MIME types are declared
-        lossless by the serializer; a target that is not a file follows
-        :attr:`__lossless_values__`.
-
-        Args:
-            filetype: The target file type to check.
-
-        Returns:
-            ``True`` if the target is lossless for this serializer.
-        """
-        return (
-            all(mime in cls.__lossless_mimes__ for mime in filetype.mimes)
-            if filetype.mimes
-            else cls.__lossless_values__
-        )
+    def obj_type(cls) -> TypeRef[V]:
+        """Return the type of object this serializer handles."""
+        return cls._typeref.typevar_map[V]
 
     @prop(cached=True, mode="class")
-    def scopes(self) -> tuple[type[S], ...]:
+    @classmethod
+    def target_type(cls) -> TypeRef[T]:
+        """Return the target type this serializer handles."""
+        return cls._typeref.typevar_map[T]
+
+    @prop(cached=True, mode="class")
+    @classmethod
+    def scopes(cls) -> tuple[type[S], ...]:
         """The scope classes this serializer declares through its ``S`` type argument.
 
         A scope value carries data (a process id, a subnet), so the class-level
         declaration is the type argument itself; selection compares it with the
         requested scope instead of materializing a value that would lose that data.
         """
-        return (cast(type[S], self._typeref.typevar_map[S].resolved_type_def),)
+        return (cast(type[S], cls._typeref.typevar_map[S].resolved_type_def),)
 
     @prop(cached=True, mode="class")
-    def serialization_targets(self) -> list[SerializationTarget[T, S, Any]]:
+    @classmethod
+    def lossless(cls) -> bool:
+        """The losslessness, which this serializer declares through its ``L`` type argument."""
+        literal_values = cls._typeref.typevar_map[L].literal_values
+        return len(literal_values) == 1 and next(iter(literal_values)) is True
+
+    @prop(cached=True, mode="class")
+    @classmethod
+    def serialization_targets(cls) -> list[SerializationTarget[V, T, S, L]]:
         """Serialization targets supported by this serializer, as declared in its type arguments."""
-        typeref = self._typeref.typevar_map[T]
+        typeref = cls._typeref.typevar_map[T]
         # The declarations are the driver's: the requested scope of an operation
         # is applied to the target when it is dispatched, so this metadata only
         # states what the serializer itself can serve.
-        declared = self.scopes
+        declared = cls.scopes
         return cast(
-            list[SerializationTarget[T, S, Any]],
+            list[SerializationTarget[V, T, S, L]],
             [
                 SerializationTarget(
-                    obj_type=self.obj_type,
+                    obj_type=cls.obj_type,
                     tgt_type=member,
                     scope=scope,
-                    lossy=not self.lossless_target(member),
+                    lossy=not cls.lossless,
                 )
                 for member in typeref.members
                 if isinstance(member, type) and issubclass(member, File)
                 for scope in declared
             ],
         )
+
+    def __init_subclass__(cls, **kwargs) -> None:  # noqa: D105, N805
+        if is_subtype(cls.obj_type.resolved_type_def, Serializable):
+            raise TypeError(
+                "Cannot register a serializer for a Serializable type: "
+                "the class itself handles its serialization."
+            )
 
     @abstractmethod
     def deserialize(
@@ -464,13 +461,17 @@ def _handles(
     return value is None or TypeRef(serializer.obj_type).validate(value)
 
 
-def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
-    typ: TypeDef[U],
+def get_serializers[V, T: Serialized, S: TransportScope, L: bool](
+    typ: TypeDef[V],
     targets: Collection[TypeDef[T]] | None = None,
     scope: S = Open(),
     allow_lossy: L = False,
     value: object | None = None,
-) -> list[tuple[int, SerializationTarget[T, S, L], Serializer[U, T, S] | type[Serializable[T, S]]]]:
+) -> list[
+    tuple[
+        int, SerializationTarget[V, T, S, L], Serializer[V, T, S, L] | type[Serializable[T, S, L]]
+    ]
+]:
     """Get the serializers that can handle a given type or instance.
 
     Args:
@@ -530,10 +531,23 @@ def get_serializers[U, T: Serialized, S: TransportScope, L: bool](
     return candidates  # pyright: ignore[reportReturnType]
 
 
+def _get_defaults_from_ctx(
+    scope: TransportScope | None = None,
+    backend: Backend | None = None,
+) -> tuple[TransportScope, Backend]:
+    context = current_ser_ctx.get()
+    if scope is None:
+        scope = context[1] if context is not None else Open()
+    if backend is None:
+        backend = context[2] if context is not None else Memory()
+    return scope, backend
+
+
 def deserialize[V2](
     source: Serialized,
     annotation: TypeDef[V2],
-    scope: TransportScope = Open(),
+    scope: TransportScope | None = None,
+    backend: Backend | None = None,
 ) -> V2:
     """Deserialize an object from the source type or format.
 
@@ -541,13 +555,14 @@ def deserialize[V2](
         source: The source object to deserialize from.
         annotation: The declared type of the object.
         scope: The serialization scope to use for the deserialization.
-        realm: The realm to deserialize from.
+        backend:
+            The backend to deserialize from. If ``None``, the current context's backend is used.
 
     Returns:
         An instance of the object, deserialized from the source.
     """
-    # Reading is not restricted to lossless formats: the lossiness of a format
-    # describes what an export can drop, not what an import can restore.
+    scope, backend = _get_defaults_from_ctx(scope, backend)
+
     candidates = get_serializers(
         annotation,
         targets=[cast(type[V2], type(source))],
@@ -563,7 +578,7 @@ def deserialize[V2](
 
     _, target, serializer = candidates[0]
 
-    with serialization_context(target):
+    with serialization_context(target, scope, backend):
         return cast(
             V2,
             (
@@ -582,13 +597,13 @@ def deserialize[V2](
         )
 
 
-def serialize[T2: Serialized](
+def serialize[T2: Serialized = Serialized](
     instance: Any,
     target_type: TypeDef[T2] | None = None,
     allow_lossy: bool = False,
-    scope: TransportScope = Open(),
+    scope: TransportScope | None = None,
     annotation: TypeDef[Serializable[T2]] | None = None,
-    backend: Backend = Memory(),
+    backend: Backend | None = None,
 ) -> T2:
     """Serialize an object to the target type or format.
 
@@ -603,11 +618,12 @@ def serialize[T2: Serialized](
         scope: The serialization scope to use for the serialization.
         annotation: The declared type of the object, if any.
         backend: The backend to serialize to.
-        file_factory: An optional factory function to create new files.
 
     Returns:
         The serialized target object.
     """
+    scope, backend = _get_defaults_from_ctx(scope, backend)
+
     candidates = get_serializers(
         typ=annotation if annotation is not None else type(instance),
         targets=[target_type] if target_type is not None else None,
@@ -630,7 +646,7 @@ def serialize[T2: Serialized](
 
     _, target, serializer = candidates[0]
 
-    with serialization_context(target, backend):
+    with serialization_context(target, scope, backend):
         return (
             serializer.__serialize__(
                 instance,
@@ -678,6 +694,8 @@ def estimate_serialized_size[T2: Serialized](
     Returns:
         The estimated number of bytes.
     """
+    scope, backend = _get_defaults_from_ctx(scope, backend)
+
     candidates = get_serializers(
         typ=annotation if annotation is not None else type(instance),
         targets=[target_type] if target_type is not None else None,
@@ -695,7 +713,7 @@ def estimate_serialized_size[T2: Serialized](
 
     _, target, serializer = candidates[0]
 
-    with serialization_context(target, backend):
+    with serialization_context(target, scope, backend):
         return (
             serializer.__estimate_serialized_size__(
                 instance,
