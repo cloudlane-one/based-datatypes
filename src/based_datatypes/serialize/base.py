@@ -14,12 +14,11 @@ from fractions import Fraction
 from pathlib import Path
 from typing import (
     Any,
-    BinaryIO,
     Generic,
     Literal,
+    LiteralString,
     Protocol,
     Self,
-    TextIO,
     TypeVar,
     cast,
     override,
@@ -28,7 +27,7 @@ from typing import (
 from uuid import UUID
 
 from based_datatypes.descriptors import prop
-from based_datatypes.files import File, I, MemoryFile, Write
+from based_datatypes.files import E, File, MemoryFile, Write
 from based_datatypes.types import TypeDef
 from based_datatypes.typing import Runtyped, TypeRef, is_subtype
 
@@ -84,7 +83,7 @@ class Backend(ABC):
     """A class representing the data backend into / from which serialization happens."""
 
     @abstractmethod
-    def get_writable_file[K: TextIO | BinaryIO](
+    def get_writable_file[K: LiteralString | None](
         self, typedef: TypeDef[File[Any, K, Write]]
     ) -> File[Any, K, Write]:
         """Return a file to write to.
@@ -99,13 +98,16 @@ class Memory(Backend):
     """A backend that writes to in-memory files."""
 
     @override
-    def get_writable_file[K: TextIO | BinaryIO](
+    def get_writable_file[K: LiteralString | None](
         self, typedef: TypeDef[File[Any, K, Write]]
     ) -> MemoryFile[Any, K, Write]:
+        enc_type = TypeRef(typedef).typevar_map[E]
 
         return MemoryFile(
             mime=File.get_all_mimes(typedef)[0],
-            io=TypeRef(typedef).typevar_map[I].resolved_type_def,
+            encoding=cast(
+                K, enc_type.literal_values.pop() if len(enc_type.literal_values) > 0 else None
+            ),
             rw="w",
         )
 
@@ -139,15 +141,23 @@ type Scalar = (
     | UUID
     | Path
 )
-type PrimitiveContainer = dict[str, Primitive] | tuple[Primitive, ...] | list[Primitive] | set[
-    Primitive
-] | frozenset[Primitive]
+type PrimitiveContainer = (
+    dict[str, Primitive]
+    | tuple[Primitive, ...]
+    | list[Primitive]
+    | set[Primitive]
+    | frozenset[Primitive]
+)
 type Primitive = Scalar | PrimitiveContainer
 
 type SerializedScalar = Scalar | File
-type SerializedContainer = dict[str, Serialized] | tuple[Serialized, ...] | list[Serialized] | set[
-    Serialized
-] | frozenset[Serialized]
+type SerializedContainer = (
+    dict[str, Serialized]
+    | tuple[Serialized, ...]
+    | list[Serialized]
+    | set[Serialized]
+    | frozenset[Serialized]
+)
 type Serialized = SerializedScalar | SerializedContainer
 
 
@@ -313,7 +323,7 @@ class Serializable(Protocol[T, S, L]):  # pyright: ignore[reportInvalidTypeVarUs
 
 
 @dataclass
-class Serializer(ABC, Runtyped, Generic[V, T, S, L]):  # noqa: UP046
+class Serializer(Runtyped, Generic[V, T, S, L]):  # noqa: UP046
     """A class representing a serialization driver for a specific type."""
 
     @prop(cached=True, mode="class")

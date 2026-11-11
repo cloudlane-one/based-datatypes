@@ -5,9 +5,9 @@ from __future__ import annotations
 import io
 import shutil
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Iterator, Sequence, Set
+from collections.abc import Callable, Generator, Iterator, Sequence, Set
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from functools import cached_property
 from mimetypes import guess_extension, guess_type
 from pathlib import Path
@@ -19,14 +19,18 @@ from typing import (
     Generic,
     Literal,
     LiteralString,
+    Self,
     TextIO,
     TypeVar,
+    TypeVarTuple,
     cast,
     overload,
     override,
 )
 
 from identify.identify import tags_from_filename, tags_from_path
+from pydantic import GetCoreSchemaHandler
+from pydantic_core import core_schema
 
 from based_datatypes.descriptors import prop
 from based_datatypes.types import TypeDef
@@ -93,8 +97,23 @@ R = TypeVar("R", bound=Read | Write, contravariant=True, default=Read | Write)
 
 
 @dataclass(kw_only=True)
-class File(ABC, Runtyped, Generic[M, E, R]):
+class File(Runtyped, Generic[M, E, R]):
     """A generic, single file (may be within a file system or object storage)."""
+
+    @staticmethod
+    def get_all_mimes(typedef: TypeDef[File]) -> list[str]:
+        """Return all MIME types of the file typedef."""
+        mimes = []
+        typeref = TypeRef(typedef)
+
+        for m in typeref.members:
+            member_typeref = TypeRef(m)
+            if M in member_typeref.typevar_map:
+                for mime in member_typeref.typevar_map[M].literal_values:
+                    if mime not in mimes:
+                        mimes.append(mime)
+
+        return mimes
 
     @prop(cached=True, mode="class")
     @classmethod
@@ -136,20 +155,60 @@ class File(ABC, Runtyped, Generic[M, E, R]):
         """The read/write mode of the file."""
         return "w" in cls._typeref.typevar_map[R].literal_values
 
-    @staticmethod
-    def get_all_mimes(typedef: TypeDef[File]) -> list[str]:
-        """Return all MIME types of the file typedef."""
-        mimes = []
-        typeref = TypeRef(typedef)
+    @classmethod
+    @override
+    def narrow_runtype(cls, init_args: dict[str, Any]) -> dict[TypeVar | TypeVarTuple, TypeDef]:
+        rw = []
+        if cls.readable:
+            rw.append("r")
+        if cls.writable:
+            rw.append("w")
 
-        for m in typeref.members:
-            member_typeref = TypeRef(m)
-            if M in member_typeref.typevar_map:
-                for mime in member_typeref.typevar_map[M].literal_values:
-                    if mime not in mimes:
-                        mimes.append(mime)
+        inst_rw = init_args.get("rw")
+        if isinstance(inst_rw, str):
+            rw = {inst_rw}
 
-        return mimes
+        return {
+            M: Literal[init_args.get("mime") or cls.default_mime],
+            E: Literal[init_args.get("encoding") or cls.default_encoding],
+            R: Literal[*(inst_rw or rw)],
+        }
+
+    @classmethod
+    def _deserialize(cls, state: dict[str, Any]) -> Self:
+        """Reconstitute the file from pickled data."""
+        instance = object.__new__(cls)
+        content = state.pop("content", None)
+
+        for f in fields(cls):
+            if f.name in state:
+                setattr(instance, f.name, state[f.name])
+            else:
+                setattr(instance, f.name, None)
+
+        if content is not None:
+            if not instance.writable:
+                raise TypeError("Cannot set content on a read-only file.")
+
+            cast(File[Any, Any, Write], instance).write(content)
+
+        return instance
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source: type[Any], handler: GetCoreSchemaHandler
+    ) -> core_schema.CoreSchema:
+        """Return the Pydantic core schema for the file."""
+        assert issubclass(source, cls)
+        return core_schema.no_info_after_validator_function(
+            cls._deserialize,
+            core_schema.str_schema(),
+            serialization=core_schema.plain_serializer_function_ser_schema(
+                cls._serialize,
+                info_arg=False,
+                return_schema=core_schema.str_schema(),
+            ),
+        )
 
     mime: M | None = None
     """Explicit MIME type."""
@@ -157,24 +216,8 @@ class File(ABC, Runtyped, Generic[M, E, R]):
     encoding: E | None = None
     """Explicit IO type."""
 
-    rw: Set[Literal["r", "w"]] | None = None
+    rw: Set[R] | R | None = None
     """Explicit read/write mode."""
-
-    def __post_init__(self) -> None:
-        """Validate the file type parameters."""
-        rw = []
-        if self.readable:
-            rw.append("r")
-        if self.writable:
-            rw.append("w")
-
-        self.narrow_instance_type(
-            {
-                M: Literal[self.mime or self.default_mime],
-                E: Literal[self.encoding or self.default_encoding],
-                R: Literal[*(self.rw or rw)],
-            }
-        )
 
     @cached_property
     def extension(self) -> str:
@@ -260,16 +303,13 @@ class File(ABC, Runtyped, Generic[M, E, R]):
 
         return state
 
-    def __set_state__(self: File[Any, Any, Any], state: dict[str, Any]) -> None:
-        """Set the state of the file from serialization."""
-        if "content" in state:
-            if not self.writable:
-                raise TypeError("Cannot set content on a read-only file.")
+    def _serialize(self) -> dict[str, Any]:
+        """Serialize the file to a dictionary."""
+        return {k: v for k, v in asdict(self).items() if v is not None}
 
-            self.write(state["content"])
-            del state["content"]
-
-        object.__setattr__(self, "__dict__", state)
+    def __reduce__(self) -> tuple[Callable[[dict[str, Any]], Self], tuple[dict[str, Any]]]:
+        """Return a tuple for pickling the file."""
+        return (self.__class__._deserialize, (self._serialize(),))
 
 
 @dataclass

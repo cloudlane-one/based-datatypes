@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import operator
 import typing
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
 from dataclasses import InitVar, dataclass, field, is_dataclass
 from functools import cached_property, reduce
@@ -17,6 +18,7 @@ from typing import (
     ForwardRef,
     Generic,
     Literal,
+    ParamSpec,
     Self,
     TypeAliasType,
     TypeGuard,
@@ -38,7 +40,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from pydantic.fields import FieldInfo
 from typing_extensions import Sentinel, TypeForm
 
-from .runtime import get_calling_module, get_subclasses
+from .runtime import get_calling_module, get_full_args_dict, get_subclasses
 from .types import (
     GenericAlias,
     LiteralArg,
@@ -344,6 +346,8 @@ class RepType[T]:
 
 
 type TypeHint[T] = TypeExpr[T] | TypeForm[T] | str | ForwardRef
+
+_virtual_typevar_tuples: dict[type, TypeVarTuple] = {}
 
 
 @dataclass(frozen=True)
@@ -847,78 +851,80 @@ class TypeRef(Generic[T]):  # noqa: UP046
         works when the values are resolved rather than the raw arguments.
         """
         # First get the typevar params of the typehint.
-        param_args: list[tuple[TypeVar | TypeVarTuple, TypeScalar]] = []
+        param_args: dict[TypeVar | TypeVarTuple, tuple[TypeScalar, ...]] = {}
         params = TypeRef(self.pure_origin).params
 
-        if len(params) > 0:
-            # Initialize a list of remaining type params and args,
-            # which are yet to be matched.
-            remaining_params = list(params)
-            remaining_args = list(self.scalar_args)
+        if len(params) == 0 and len(self.scalar_args) > 0:
+            # Handle builtin types that are parameterized but do not declare typevars, list.
+            if self.pure_origin in _virtual_typevar_tuples:
+                params = (_virtual_typevar_tuples[self.pure_origin],)
+            else:
+                # Create a virtual typevar-tuple for the builtin type.
+                vtt = TypeVarTuple(f"_{self.pure_origin.__name__}_args")  # pyright: ignore[reportGeneralTypeIssues]
+                _virtual_typevar_tuples[self.pure_origin] = vtt
+                params = (vtt,)
 
-            param_arg_pointer: int = 0
-            next_item: Literal[-1, 0] = 0
+        # Initialize a list of remaining type params and args,
+        # which are yet to be matched.
+        remaining_params = list(params)
+        remaining_args = list(self.scalar_args)
 
-            assert (
-                sum(isinstance(a, RepType) for a in remaining_args) <= 1
-            ), "Only one repeating type is allowed in type arguments"
+        next_item: Literal[-1, 0] = 0
 
-            while len(remaining_params) > 0:
-                p = remaining_params.pop(next_item)
+        assert sum(isinstance(a, RepType) for a in remaining_args) <= 1, (
+            "Only one repeating type is allowed in type arguments"
+        )
 
-                # If no more args are left, fill the rest of the map
-                # with the type param defaults.
-                if len(remaining_args) == 0:
-                    param_args.insert(
-                        param_arg_pointer,
-                        (
-                            p,
-                            TypeRef(
-                                p, ctx_module=self.module, subs=self.subs, overrides=self.overrides
-                            ).pure_type_def,
-                        ),
-                    )
+        while len(remaining_params) > 0:
+            p = remaining_params.pop(next_item)
+
+            # If no more args are left, fill the rest of the map
+            # with the type param defaults.
+            if len(remaining_args) == 0:
+                param_args[p] = (
+                    TypeRef(
+                        p, ctx_module=self.module, subs=self.subs, overrides=self.overrides
+                    ).pure_type_def,
+                )
+                continue
+
+            next_arg = remaining_args[next_item]
+            if isinstance(next_arg, RepType):
+                if len(remaining_args) > 1:
+                    # Switch direction to evaluate from the end of the remaining args
+                    # backwards, so that the repeating type is evaluated last.
+                    next_item = -1
                     continue
 
-                next_arg = remaining_args[next_item]
-                if isinstance(next_arg, RepType):
-                    if len(remaining_args) > 1:
-                        # Switch direction to evaluate from the end of the remaining args
-                        # backwards, so that the repeating type is evaluated last.
-                        next_item = -1
-                        param_arg_pointer = len(param_args)
-                        continue
+                next_arg = next_arg.type
+            else:
+                remaining_args.pop(next_item)
 
-                    next_arg = next_arg.type
-                else:
-                    remaining_args.pop(next_item)
+            if isinstance(p, TypeVar | TypeVarTuple):
+                # In case of a normal typevar, map the next arg.
+                param_args[p] = (next_arg,)
 
-                if isinstance(p, TypeVar | TypeVarTuple):
-                    # In case of a normal typevar, map the next arg.
-                    param_args.insert(
-                        param_arg_pointer,
-                        (p, next_arg),
-                    )
+            if isinstance(p, TypeVarTuple):
+                # In case of a typevar-tuple, map all remaining args
+                # minus those associated to downstream typevars.
+                # There should not be any other TypeVarTuples downstream,
+                # as those are not supported in the typing module.
+                while len(remaining_args) > len(remaining_params) and not isinstance(
+                    next_arg, RepType
+                ):
+                    next_arg = remaining_args[next_item]
+                    if isinstance(next_arg, RepType):
+                        next_arg = next_arg.type
+                    else:
+                        remaining_args.pop(next_item)
 
-                if isinstance(p, TypeVarTuple):
-                    # In case of a typevar-tuple, map all remaining args
-                    # minus those associated to downstream typevars.
-                    # There should not be any other TypeVarTuples downstream,
-                    # as those are not supported in the typing module.
-                    while len(remaining_args) > len(remaining_params) and not isinstance(
-                        next_arg, RepType
-                    ):
-                        next_arg = remaining_args[next_item]
-                        if isinstance(next_arg, RepType):
-                            next_arg = next_arg.type
-                        else:
-                            remaining_args.pop(next_item)
-                        param_args.insert(
-                            param_arg_pointer,
-                            (p, next_arg),
-                        )
+                    param_args[p] += (next_arg,)
 
-        return {k: v for k, v in param_args} | dict(self.subs) | dict(self.overrides)
+        param_map = {
+            k: v[0] if isinstance(k, TypeVar) else tuple[*v] for k, v in param_args.items()
+        }
+
+        return param_map | dict(self.subs) | dict(self.overrides)
 
     @cached_property
     def typevar_map(
@@ -948,8 +954,7 @@ class TypeRef(Generic[T]):  # noqa: UP046
                 ).typevar_map.items():
                     typevar_map[var] = TypeRef(
                         (  # pyright: ignore[reportArgumentType]
-                            typevar_map[var].pure_type_def
-                            | value.pure_type_def  # pyright: ignore[reportOperatorIssue]
+                            typevar_map[var].pure_type_def | value.pure_type_def  # pyright: ignore[reportOperatorIssue]
                             if var in typevar_map
                             else value.pure_type_def
                         ),
@@ -1142,25 +1147,24 @@ class NotProvided:
     """Sentinel for missing type arguments."""
 
 
-class Runtyped:
+class Runtyped(ABC):
     """Class, which is aware of its type arguments."""
 
-    __origin__: type[Runtyped]
-    __args__: tuple[TypeForm, ...]
+    __parameters__: tuple[TypeVar | TypeVarTuple, ...]
+    __type_params__: tuple[TypeVar | ParamSpec | TypeVarTuple, ...]
 
     _typeref: TypeRef[Self]
+    _origin: type[Runtyped]
+    _args: tuple[TypeForm, ...]
     _generic_subclasses: dict[tuple[Hashable, ...], type[Self]]
     _generic_alias: GenericAlias | None
 
     def __init_subclass__(cls):  # noqa: D105
-        if "__origin__" not in cls.__dict__:
-            cls.__origin__ = cls
-        if "__args__" not in cls.__dict__:
-            cls.__args__ = ()
-        if "__parameters__" not in cls.__dict__ and Generic not in cls.__mro__:
-            cls.__parameters__ = ()
-        if "__type_params__" not in cls.__dict__ and Generic not in cls.__mro__:
-            cls.__type_params__ = ()
+        if Generic not in cls.__mro__:
+            if "__parameters__" not in cls.__dict__:
+                cls.__parameters__ = ()
+            if "__type_params__" not in cls.__dict__:
+                cls.__type_params__ = ()
 
         orig_bases = []
         for base in cls.__bases__:
@@ -1178,18 +1182,20 @@ class Runtyped:
 
         if "_typeref" not in cls.__dict__:
             cls._typeref = TypeRef(cls)
+        if "_origin" not in cls.__dict__:
+            cls._origin = cls
+        if "_args" not in cls.__dict__:
+            cls._args = ()
         if "_generic_subclasses" not in cls.__dict__:
             cls._generic_subclasses = {}
         if "_generic_alias" not in cls.__dict__:
             cls._generic_alias = None
 
     def __class_getitem__(cls, item: TypeForm | tuple[TypeForm, ...]) -> type[Self]:  # noqa: D105
-        origin = cls.__origin__
+        origin = cls._origin
 
         module = get_calling_module(1)
-        generic: (
-            GenericAlias
-        ) = super().__class_getitem__(  # pyright: ignore[reportAttributeAccessIssue]
+        generic: GenericAlias = super().__class_getitem__(  # pyright: ignore[reportAttributeAccessIssue]
             item
         )
         typeref = TypeRef(generic, ctx_module=module)
@@ -1207,10 +1213,10 @@ class Runtyped:
             bases=(origin,),
             exec_body=lambda ns: ns.update(
                 {
-                    "__origin__": origin,
                     "__orig_bases__": (generic,),
-                    "__args__": tuple(full_args),
                     "__module__": module.__name__ if module is not None else None,
+                    "_origin": origin,
+                    "_args": tuple(full_args),
                     "_generic_subclasses": origin._generic_subclasses,
                     "_generic_alias": generic,
                 }
@@ -1219,20 +1225,24 @@ class Runtyped:
         origin._generic_subclasses[full_args] = subclass
         return subclass
 
-    def narrow_instance_type(self, typevar_map: dict[TypeVar | TypeVarTuple, TypeDef]) -> None:
-        """Set the type of this instance to a subclass of its current type.
+    @classmethod
+    @abstractmethod
+    def narrow_runtype(cls, init_args: dict[str, Any]) -> dict[TypeVar | TypeVarTuple, TypeDef]:
+        """Narrow the type given the initialization arguments.
 
         Args:
-            typevar_map: A mapping of type variables to their concrete types.
-
-        Raises:
-            TypeError: If ``cls`` is not a subclass of the current type.
+            init_args: A mapping of initialization arguments to their values.
         """
-        new_cls = TypeRef(self.__origin__, subs=typevar_map).runtime_type_def
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> Self:  # noqa: D102
+        args_dict = get_full_args_dict(cls, args, kwargs)
+        typevar_map = cls.narrow_runtype(args_dict)
+
+        new_cls = TypeRef(cls._origin, subs=typevar_map).runtime_type_def
         assert isinstance(new_cls, type)
-        if not issubclass(new_cls, self.__class__):
+        if not issubclass(new_cls, cls):
             raise TypeError(
-                f"Cannot narrow instance type to {new_cls}, "
-                f"which is not a subclass of {self.__class__}"
+                f"Cannot narrow instance type to {new_cls}, which is not a subclass of {cls}"
             )
-        self.__class__ = new_cls
+
+        return super().__new__(new_cls)
