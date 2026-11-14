@@ -551,6 +551,12 @@ class PyObjectRef(Generic[T]):  # noqa: UP046
             }
         ).with_fragment(f"{self.module_name}:{self.qualname}")
 
+    def __str__(self) -> str:  # noqa: D105
+        return str(self.url)
+
+    def __reduce__(self) -> tuple[Any, ...]:  # noqa: D105
+        return (self.from_url, (str(self.url), self.object_type))
+
 
 def stref(obj: Any) -> str:
     """Get string representation of given object reference.

@@ -1158,8 +1158,9 @@ class Runtyped(ABC):
     _args: tuple[TypeForm, ...]
     _generic_subclasses: dict[tuple[Hashable, ...], type[Self]]
     _generic_alias: GenericAlias | None
+    _param_dict: dict[str, TypeVar | TypeVarTuple]
 
-    def __init_subclass__(cls):  # noqa: D105
+    def __init_subclass__(cls):  # noqa: C901, D105
         if Generic not in cls.__mro__:
             if "__parameters__" not in cls.__dict__:
                 cls.__parameters__ = ()
@@ -1190,6 +1191,10 @@ class Runtyped(ABC):
             cls._generic_subclasses = {}
         if "_generic_alias" not in cls.__dict__:
             cls._generic_alias = None
+        if "_param_dict" not in cls.__dict__:
+            cls._param_dict = {
+                p.__name__: p for p in cls.__parameters__ if isinstance(p, TypeVar | TypeVarTuple)
+            }
 
     def __class_getitem__(cls, item: TypeForm | tuple[TypeForm, ...]) -> type[Self]:  # noqa: D105
         origin = cls._origin

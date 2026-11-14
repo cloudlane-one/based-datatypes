@@ -54,36 +54,6 @@ class dualmethod[C, **P, T]:  # noqa: N801
         return wrapper
 
 
-def cached_method[S, R, **P](
-    func: Callable[Concatenate[S, P], R],
-) -> Callable[Concatenate[S, P], R]:
-    """Decorator to cache method results on the instance level."""
-
-    @functools.wraps(func)
-    def wrapper(self: S, *args: P.args, **kwargs: P.kwargs) -> R:
-        # ``vars`` is the receiver's own namespace, so a subclass never reuses a
-        # cache an ancestor stored: inherited attributes would hide it from
-        # ``hasattr`` and let classmethod caches leak down the MRO.
-        cache_name = f"__{func.__name__}_cache"
-        namespace = vars(self)
-        if cache_name not in namespace:
-            setattr(self, cache_name, {})
-
-        # The function is part of the key: a decorated override and the decorated
-        # base method it calls through ``super()`` share one cache attribute per
-        # name, and without the function the override's result would be returned
-        # for the base implementation too.
-        cache: dict[tuple[Any, ...], R] = namespace[cache_name]
-        key = (func, args, frozenset(kwargs.items()))
-
-        if key not in cache:
-            cache[key] = func(self, *args, **kwargs)
-
-        return cache[key]
-
-    return wrapper
-
-
 class Read:
     """Readable property."""
 

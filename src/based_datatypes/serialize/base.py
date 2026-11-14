@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Collection, Generator, Iterable
+from collections.abc import Collection, Generator, Iterable, Mapping, Set
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from enum import Enum
 from fractions import Fraction
+from functools import cached_property
 from pathlib import Path
 from typing import (
     Any,
@@ -26,10 +28,61 @@ from typing import (
 )
 from uuid import UUID
 
+from based_datatypes.caching.base import cached
 from based_datatypes.descriptors import prop
 from based_datatypes.files import E, File, MemoryFile, Write
+from based_datatypes.ref import PyObjectRef
 from based_datatypes.types import TypeDef
 from based_datatypes.typing import Runtyped, TypeRef, is_subtype
+
+type Scalar = (
+    None
+    | bool
+    | int
+    | float
+    | Decimal
+    | Fraction
+    | complex
+    | datetime
+    | date
+    | time
+    | timedelta
+    | UUID
+    | Path
+    | Enum
+)
+
+type PrimitiveLeaf[S: Scalar = Scalar] = S | str | bytes | bytearray | memoryview
+type PrimitiveContainer[S: Scalar = Scalar] = Mapping[str, Primitive[S]] | Collection[Primitive[S]]
+type UntaggedPrimitive[S: Scalar = Scalar] = PrimitiveLeaf[S] | PrimitiveContainer[S]
+type Primitive[S: Scalar = Scalar] = UntaggedPrimitive[S] | Tagged[UntaggedPrimitive[S], Any]
+
+type SerializedLeaf[S: Scalar = Scalar, M: LiteralString = Any] = (
+    PrimitiveLeaf[S] | File[M, Any, Any]
+)
+type SerializedContainer[S: Scalar = Scalar, M: LiteralString = Any] = (
+    Mapping[str, Serialized[S, M]] | Collection[Serialized[S, M]]
+)
+type UntaggedSerialized[S: Scalar = Scalar, M: LiteralString = Any] = (
+    SerializedLeaf[S, M] | SerializedContainer[S, M]
+)
+type Serialized[S: Scalar = Scalar, M: LiteralString = Any] = (
+    UntaggedSerialized[S, M] | Tagged[UntaggedSerialized[S, M], Any]
+)
+
+
+@dataclass(frozen=True)
+class Tagged[T: Serialized[Any, Any] = Serialized, V = Any]:
+    """A wrapper for a serialized value that carries a type tag."""
+
+    value: T
+    type_tag: type[V]
+
+    @cached_property
+    def tag_str(self) -> str:
+        """Return the string representation of the type tag."""
+        ref = PyObjectRef.reference(self.type_tag)
+        return f"{ref.module_name}/{ref.qualname}"
 
 
 @dataclass(frozen=True)
@@ -79,8 +132,10 @@ class Open(TransportScope):
     """No restriction to the serialization scope, meaning full offline serialization."""
 
 
-class Backend(ABC):
+class Backend[S: Scalar = Scalar](ABC):
     """A class representing the data backend into / from which serialization happens."""
+
+    supported_scalars: Set[type[S]] = TypeRef(Scalar).typeset  # pyright: ignore[reportAssignmentType]
 
     @abstractmethod
     def get_writable_file[K: LiteralString | None](
@@ -93,9 +148,28 @@ class Backend(ABC):
         """
         ...
 
+    def store(self, data: Serialized[S]) -> None:
+        """Store the serialized data in the backend.
 
-class Memory(Backend):
+        Args:
+            data: The serialized data to store.
+        """
+        ...
+
+    def load(self) -> Serialized[S]:
+        """Load the serialized data from the backend.
+
+        Returns:
+            The serialized data.
+        """
+        ...
+
+
+@dataclass
+class Memory(Backend[Scalar]):
     """A backend that writes to in-memory files."""
+
+    _data: Serialized | None = None
 
     @override
     def get_writable_file[K: LiteralString | None](
@@ -111,66 +185,31 @@ class Memory(Backend):
             rw="w",
         )
 
+    def store(self, data: Serialized) -> None:
+        """Store the serialized data in the backend.
 
-class UnsupportedTargetError(ValueError):
-    """A serializer cannot produce the requested target.
+        Args:
+            data: The serialized data to store.
+        """
+        self._data = data
 
-    A driver raises this when the requested format cannot carry what it was
-    asked to write — a JSON or YAML file cannot hold a file produced for a
-    nested item, for example. :func:`serialize` and
-    :func:`estimate_serialized_size` treat it as a selection miss: they try the
-    next matching serializer and only raise when none can fulfil the target.
-    """
+    def load(self) -> Serialized:
+        """Load the serialized data from the backend.
 
-
-type Scalar = (
-    None
-    | bool
-    | int
-    | float
-    | Decimal
-    | Fraction
-    | complex
-    | str
-    | bytes
-    | bytearray
-    | datetime
-    | date
-    | time
-    | timedelta
-    | UUID
-    | Path
-)
-type PrimitiveContainer = (
-    dict[str, Primitive]
-    | tuple[Primitive, ...]
-    | list[Primitive]
-    | set[Primitive]
-    | frozenset[Primitive]
-)
-type Primitive = Scalar | PrimitiveContainer
-
-type SerializedScalar = Scalar | File
-type SerializedContainer = (
-    dict[str, Serialized]
-    | tuple[Serialized, ...]
-    | list[Serialized]
-    | set[Serialized]
-    | frozenset[Serialized]
-)
-type Serialized = SerializedScalar | SerializedContainer
+        Returns:
+            The serialized data.
+        """
+        return self._data
 
 
 V = TypeVar("V")
-V2 = TypeVar("V2")
 T = TypeVar("T", bound=Serialized)
-T2 = TypeVar("T2", bound=Serialized)
-S = TypeVar("S", bound=TransportScope, default=Open, contravariant=True)
+TS = TypeVar("TS", bound=TransportScope, default=Open, contravariant=True)
 L = TypeVar("L", bound=bool, default=Literal[False])
 
 
 @dataclass(frozen=True)
-class SerializationTarget(Generic[V, T, S, L]):
+class SerializationTarget(Generic[V, T, TS, L]):
     """A set of supported serialization formats."""
 
     obj_type: TypeDef[V]
@@ -179,7 +218,7 @@ class SerializationTarget(Generic[V, T, S, L]):
     tgt_type: type[T]
     """The type of the target format."""
 
-    scope: type[S]
+    scope: type[TS]
     """The scope this target format is declared for."""
 
     lossy: L
@@ -200,7 +239,7 @@ class SerializationTarget(Generic[V, T, S, L]):
         types: Collection[TypeDef[Serialized]] | None = None,
         scope: TransportScope | None = None,
         allow_lossy: bool = False,
-    ) -> list[SerializationTarget[V, T, S, L]]:
+    ) -> list[SerializationTarget[V, T, TS, L]]:
         """Return the subset of targets that match any of the given types.
 
         Args:
@@ -213,7 +252,7 @@ class SerializationTarget(Generic[V, T, S, L]):
             The list of matching serialization targets.
         """
         return cast(
-            list[SerializationTarget[V, T, S, L]],
+            list[SerializationTarget[V, T, TS, L]],
             [
                 t
                 for t in targets
@@ -252,11 +291,11 @@ def serialization_context(
 
 
 @runtime_checkable
-class Serializable(Protocol[T, S, L]):  # pyright: ignore[reportInvalidTypeVarUse]
+class Serializable(Protocol[T, TS, L]):  # pyright: ignore[reportInvalidTypeVarUse]
     """Protocol for classes that can serialize and deserialize themselves."""
 
     @classmethod
-    def __serialization_targets__(cls) -> list[SerializationTarget[Self, T, S, L]]:
+    def __serialization_targets__(cls) -> list[SerializationTarget[Self, T, TS, L]]:
         """Serialization targets supported by this class."""
         ...
 
@@ -264,7 +303,7 @@ class Serializable(Protocol[T, S, L]):  # pyright: ignore[reportInvalidTypeVarUs
     def __deserialize__(
         cls,
         source: Serialized,
-        scope: S = Open(),
+        scope: TS = Open(),
         annotation: TypeDef[Self] | None = None,
     ) -> Self:
         """Deserialize from the source type or format.
@@ -283,7 +322,7 @@ class Serializable(Protocol[T, S, L]):  # pyright: ignore[reportInvalidTypeVarUs
         self,
         target_type: TypeDef[T],
         allow_lossy: bool = False,
-        scope: S = Open(),
+        scope: TS = Open(),
         annotation: TypeDef[Serializable[T, Any, Any]] | None = None,
         backend: Backend = Memory(),
     ) -> T:
@@ -305,7 +344,7 @@ class Serializable(Protocol[T, S, L]):  # pyright: ignore[reportInvalidTypeVarUs
         self,
         target_type: TypeDef[T],
         allow_lossy: bool = False,
-        scope: S = Open(),
+        scope: TS = Open(),
         annotation: TypeDef[Serializable[T, Any, Any]] | None = None,
     ) -> int:
         """Estimate the byte size of serializing this object to ``target_type``.
@@ -323,7 +362,7 @@ class Serializable(Protocol[T, S, L]):  # pyright: ignore[reportInvalidTypeVarUs
 
 
 @dataclass
-class Serializer(Runtyped, Generic[V, T, S, L]):  # noqa: UP046
+class Serializer(Runtyped, Generic[V, T, TS, L]):  # noqa: UP046
     """A class representing a serialization driver for a specific type."""
 
     @prop(cached=True, mode="class")
@@ -340,14 +379,14 @@ class Serializer(Runtyped, Generic[V, T, S, L]):  # noqa: UP046
 
     @prop(cached=True, mode="class")
     @classmethod
-    def scopes(cls) -> tuple[type[S], ...]:
+    def scopes(cls) -> tuple[type[TS], ...]:
         """The scope classes this serializer declares through its ``S`` type argument.
 
         A scope value carries data (a process id, a subnet), so the class-level
         declaration is the type argument itself; selection compares it with the
         requested scope instead of materializing a value that would lose that data.
         """
-        return (cast(type[S], cls._typeref.typevar_map[S].resolved_type_def),)
+        return (cast(type[TS], cls._typeref.typevar_map[TS].resolved_type_def),)
 
     @prop(cached=True, mode="class")
     @classmethod
@@ -358,7 +397,7 @@ class Serializer(Runtyped, Generic[V, T, S, L]):  # noqa: UP046
 
     @prop(cached=True, mode="class")
     @classmethod
-    def serialization_targets(cls) -> list[SerializationTarget[V, T, S, L]]:
+    def serialization_targets(cls) -> list[SerializationTarget[V, T, TS, L]]:
         """Serialization targets supported by this serializer, as declared in its type arguments."""
         typeref = cls._typeref.typevar_map[T]
         # The declarations are the driver's: the requested scope of an operation
@@ -366,7 +405,7 @@ class Serializer(Runtyped, Generic[V, T, S, L]):  # noqa: UP046
         # states what the serializer itself can serve.
         declared = cls.scopes
         return cast(
-            list[SerializationTarget[V, T, S, L]],
+            list[SerializationTarget[V, T, TS, L]],
             [
                 SerializationTarget(
                     obj_type=cls.obj_type,
@@ -392,7 +431,7 @@ class Serializer(Runtyped, Generic[V, T, S, L]):  # noqa: UP046
         self,
         source: T,
         annotation: TypeDef[V],
-        scope: S = Open(),
+        scope: TS = Open(),
     ) -> V:
         """Deserialize an object from the source type or format.
 
@@ -412,7 +451,7 @@ class Serializer(Runtyped, Generic[V, T, S, L]):  # noqa: UP046
         instance: V,
         target_type: TypeDef[T] | None = None,
         allow_lossy: bool = False,
-        scope: S = Open(),
+        scope: TS = Open(),
         annotation: TypeDef[V] | None = None,
         backend: Backend = Memory(),
     ) -> T:
@@ -436,7 +475,7 @@ class Serializer(Runtyped, Generic[V, T, S, L]):  # noqa: UP046
         instance: V,
         target_type: TypeDef[T] | None = None,
         allow_lossy: bool = False,
-        scope: S = Open(),
+        scope: TS = Open(),
         annotation: TypeDef[V] | None = None,
     ) -> int:
         """Estimate the byte size of serializing ``instance`` to ``target_type``.
@@ -471,6 +510,7 @@ def _handles(
     return value is None or TypeRef(serializer.obj_type).validate(value)
 
 
+@cached(args_callback={"value": lambda v: id(v) if v is not None else None})
 def get_serializers[V, T: Serialized, S: TransportScope, L: bool](
     typ: TypeDef[V],
     targets: Collection[TypeDef[T]] | None = None,
@@ -746,3 +786,119 @@ def estimate_serialized_size[T2: Serialized](
 def register_serializer(ser: Serializer[Any, Any, Any]) -> None:
     """Register a custom serializer."""
     _serializers.append(ser)
+
+
+C = TypeVar("C")
+
+
+class Convertible(Runtyped, Serializable[T, TS, L], Generic[C, T, TS, L]):
+    """Serialize via converting to another object type ``C``."""
+
+    @prop(cached=True, mode="class")
+    @classmethod
+    def conversion_type(cls) -> TypeDef[C]:
+        """Return the type of the intermediate object this converter uses."""
+        return cls._typeref.typevar_map[C].resolved_type_def
+    
+    @prop(cached=True, mode="class")
+    def conversion_chain(cls) -> tuple[*tuple[type[Convertible], ...], type]:
+        
+
+    @classmethod
+    @abstractmethod
+    def __revert__(
+        cls,
+        source: C,
+        annotation: TypeDef[V],
+    ) -> Self:
+        """Revert a converted object back to the original type.
+
+        Args:
+            source: The converted object to revert.
+            annotation: The declared type of the original object.
+
+        Returns:
+            The reverted original object.
+        """
+        ...
+
+    @abstractmethod
+    def __convert__(
+        self,
+        target_type: TypeDef[T] | None = None,
+    ) -> C:
+        """Convert an object to the target type or format.
+
+        Args:
+            target_type: The target type or format to convert to.
+
+        Returns:
+            The converted target object.
+        """
+        ...
+
+    @classmethod
+    def __serialization_targets__(cls) -> list[SerializationTarget[Self, T, TS, L]]:
+        """Serialization targets supported by this class."""
+        ...
+
+    @classmethod
+    def __deserialize__(
+        cls,
+        source: Serialized,
+        scope: TS = Open(),
+        annotation: TypeDef[Self] | None = None,
+    ) -> Self:
+        """Deserialize from the source type or format.
+
+        Args:
+            source: The source object to deserialize from.
+            scope: The serialization scope to use for the deserialization.
+            annotation: The declared type of the object, if any.
+
+        Returns:
+            An instance of the class, deserialized from the source.
+        """
+        ...
+
+    def __serialize__(
+        self,
+        target_type: TypeDef[T],
+        allow_lossy: bool = False,
+        scope: TS = Open(),
+        annotation: TypeDef[Serializable[T, Any, Any]] | None = None,
+        backend: Backend = Memory(),
+    ) -> T:
+        """Serialize to the target type or format.
+
+        Args:
+            target_type: The target type or format to serialize to.
+            allow_lossy: Whether to allow lossy serialization.
+            scope: The serialization scope to use for the serialization.
+            annotation: The declared type of the object, if any.
+            backend: The backend to serialize to.
+
+        Returns:
+            The serialized target object.
+        """
+        ...
+
+    def __estimate_serialized_size__(
+        self,
+        target_type: TypeDef[T],
+        allow_lossy: bool = False,
+        scope: TS = Open(),
+        annotation: TypeDef[Serializable[T, Any, Any]] | None = None,
+    ) -> int:
+        """Estimate the byte size of serializing this object to ``target_type``.
+
+        Args:
+            target_type: The target type or format to estimate the byte size for.
+            allow_lossy: Whether to allow lossy serialization.
+            scope: The serialization scope to use for the estimation.
+            annotation: The declared type of the object, if any.
+
+        Returns:
+            The estimated byte size of serializing this object to ``target_type``.
+        """
+        ...

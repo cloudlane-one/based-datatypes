@@ -48,6 +48,7 @@ from .base import (
     Serialized,
     SerializedDict,
     Serializer,
+    Tagged,
     TransportScope,
     UnsupportedTargetError,
     deserialize,
@@ -61,139 +62,6 @@ T = TypeVar("T", bound=Serialized)
 
 # Helper functions:
 
-
-def _read_text(source: Serialized) -> str:
-    """Read text from a file, or pass text through unchanged."""
-    if isinstance(source, File):
-        with source.open("r") as stream:
-            return cast(str, stream.read())
-
-    if isinstance(source, str):
-        return source
-
-    raise TypeError(f"Expected a text file or a string, got {type(source).__name__}.")
-
-
-def _require_file(source: Serialized, serializer: str) -> File:
-    """Return the source as a file, or refuse a source that is not one."""
-    if isinstance(source, File):
-        return source
-
-    raise TypeError(f"{serializer} deserializes from a file, got {type(source).__name__}.")
-
-
-# JSON / YAML
-
-type JSONScalar = str | int | float | bool | None
-type JSONDict = dict[str, JSONValue]
-type JSONValue = JSONScalar | JSONDict | list[JSONValue]
-type JSONFile = (
-    File[Literal["application/json"], TextIO] | File[Literal["application/yaml"], TextIO]
-)
-
-
-def scalar_to_json(scalar: Scalar) -> JSONValue:  # noqa: C901
-    """Convert a scalar to a JSON-supported value, or a JSON-shaped dictionary."""
-    match scalar:
-        case str() | int() | float() | bool() | None:
-            return scalar
-        case Decimal():
-            return {"$dec": str(scalar)}
-        case Fraction():
-            return {"$frac": [scalar.numerator, scalar.denominator]}
-        case complex():
-            return {"$complex": [scalar.real, scalar.imag]}
-        case bytes():
-            return {"$bytes": base64.b64encode(bytes(scalar)).decode("ascii")}
-        case bytearray():
-            return {"$bytearray": base64.b64encode(bytes(scalar)).decode("ascii")}
-        case dt.datetime():
-            return {"$dt": scalar.isoformat()}
-        case dt.date():
-            return {"$date": scalar.isoformat()}
-        case dt.time():
-            return {"$time": scalar.isoformat()}
-        case dt.timedelta():
-            return {"$timedelta": scalar.total_seconds()}
-        case uuid.UUID():
-            return {"$uuid": str(scalar)}
-        case Path():
-            return {"$path": str(scalar)}
-
-
-class YamlDumper(yaml.Dumper):
-    """YAML dumper supporting all primitive types, including decimals and UUIDs."""
-
-
-YamlDumper.add_representer(
-    Decimal, lambda dumper, value: dumper.represent_scalar("!dec", str(value))
-)
-YamlDumper.add_representer(
-    Fraction,
-    lambda dumper, value: dumper.represent_sequence("!frac", [value.numerator, value.denominator]),
-)
-YamlDumper.add_representer(
-    uuid.UUID, lambda dumper, value: dumper.represent_scalar("!uuid", str(value))
-)
-YamlDumper.add_representer(Path, lambda dumper, value: dumper.represent_scalar("!path", str(value)))
-
-
-@final
-class NotResolved:
-    """A sentinel for signalling that a (de)serialization attempt did not resolve a value."""
-
-
-def json_to_scalar(value: JSONValue) -> Scalar | NotResolved:  # noqa: C901
-    """Convert a JSON-supported value or a JSON-shaped dictionary to a scalar."""
-    if isinstance(value, dict):
-        if "$dec" in value:
-            return Decimal(validated(str, value["$dec"]))
-        if "$frac" in value:
-            numerator, denominator = validated(tuple[int, int], value["$frac"])
-            return Fraction(numerator, denominator)
-        if "$complex" in value:
-            real, imag = validated(tuple[float, float], value["$complex"])
-            return complex(real, imag)
-        if "$bytes" in value:
-            return base64.b64decode(validated(str, value["$bytes"]).encode("ascii"))
-        if "$bytearray" in value:
-            return bytearray(base64.b64decode(validated(str, value["$bytearray"]).encode("ascii")))
-        if "$dt" in value:
-            return dt.datetime.fromisoformat(validated(str, value["$dt"]))
-        if "$date" in value:
-            return dt.date.fromisoformat(validated(str, value["$date"]))
-        if "$time" in value:
-            return dt.time.fromisoformat(validated(str, value["$time"]))
-        if "$timedelta" in value:
-            return dt.timedelta(seconds=validated(float, value["$timedelta"]))
-        if "$uuid" in value:
-            return uuid.UUID(validated(str, value["$uuid"]))
-        if "$path" in value:
-            return Path(validated(str, value["$path"]))
-
-    return NotResolved()
-
-
-class YamlLoader(yaml.FullLoader):
-    """YAML loader supporting all primitive types, including decimals and UUIDs."""
-
-
-YamlLoader.add_constructor(
-    "!dec",
-    lambda loader, node: Decimal(loader.construct_scalar(validated(yaml.ScalarNode, node))),
-)
-YamlLoader.add_constructor(
-    "!frac",
-    lambda loader, node: Fraction(*loader.construct_sequence(validated(yaml.SequenceNode, node))),
-)
-YamlLoader.add_constructor(
-    "!uuid",
-    lambda loader, node: uuid.UUID(loader.construct_scalar(validated(yaml.ScalarNode, node))),
-)
-YamlLoader.add_constructor(
-    "!path",
-    lambda loader, node: Path(loader.construct_scalar(validated(yaml.ScalarNode, node))),
-)
 
 
 type Container = Mapping[Any, Any] | Sequence[Any] | Set[Any] | DataclassInstance
@@ -279,9 +147,9 @@ class JSONSerializer(Serializer[JSONDict, JSONDict | JSONFile, Open]):
         scope: TransportScope = Open(),
     ) -> JSONDict:
         parsed = _read_json_value(source)
-        assert has_type(
-            parsed, JSONDict
-        ), f"Expected a JSON-shaped dictionary, got {type(parsed).__name__}."
+        assert has_type(parsed, JSONDict), (
+            f"Expected a JSON-shaped dictionary, got {type(parsed).__name__}."
+        )
         return parsed
 
     @override
@@ -1143,9 +1011,7 @@ type ReduceTuple = tuple[Callable[..., Any], tuple[Any, ...]]
 
 # Types the default pickler handles natively. Only the pure-Python pickler
 # exposes this table; the C-accelerated Pickler hides it.
-_DISPATCH: Final[dict[type[Any], Callable[[pickle.Pickler, Any], None]]] = (
-    pickle._Pickler.dispatch  # type: ignore[attr-defined]  # noqa: SLF001
-)
+_DISPATCH: Final[dict[type[Any], Callable[[pickle.Pickler, Any], None]]] = pickle._Pickler.dispatch  # type: ignore[attr-defined]  # noqa: SLF001
 
 
 class SerializePickler(pickle.Pickler):
@@ -1282,198 +1148,33 @@ class PickleSerializer(Serializer[Any, PickleFile, Open]):
 
 # Primitive types
 
-
-class PrimitiveSerializer(Serializer[V, T, Open]):
-    """Shared handling for primitive types."""
-
-    @abstractmethod
-    def _encode(self, instance: V) -> T:
-        """Convert the object into its primitive representation."""
-        ...
-
-    @abstractmethod
-    def _decode(self, source: T, annotation: TypeDef[Any] | None = None) -> V:
-        """Restore the object from its primitive representation."""
-        ...
-
-    @override
-    def serialize(
-        self,
-        instance: V,
-        target_type: TypeDef[Any] | None = None,
-        allow_lossy: bool = False,
-        scope: TransportScope = Open(),
-        annotation: TypeDef[Any] | None = None,
-        backend: Backend = Memory(),
-    ) -> T:
-        if is_subtype(target_type, File):
-            raise ValueError(
-                f"{type(self).__name__} serializes to a JSON value, not to a file; embed "
-                "the value in a dict or list to write it to a file."
-            )
-
-        return self._encode(instance)
-
-    @override
-    def deserialize(
-        self,
-        source: T,
-        annotation: TypeDef[Any],
-        scope: TransportScope = Open(),
-    ) -> V:
-        if isinstance(source, File):
-            raise TypeError(
-                f"{type(self).__name__} deserializes from a JSON value, "
-                f"got a {type(source).__name__}."
-            )
-
-        decoded = self._decode(source, annotation)
-        assert has_type(decoded, annotation)
-        return decoded
-
-    @override
-    def estimate_serialized_size(
-        self,
-        instance: V,
-        target_type: TypeDef[Any] | None = None,
-        allow_lossy: bool = False,
-        scope: TransportScope = Open(),
-        annotation: TypeDef[Any] | None = None,
-    ) -> int:
-        return len(json.dumps(self._encode(instance)).encode("utf-8"))
-
-
-# Dates and times
-
-
-class DateTimeSerializer(PrimitiveSerializer[dt.datetime, str]):
-    """Serializer for datetimes, as ISO 8601 text."""
-
-    @override
-    def _encode(self, instance: dt.datetime) -> str:
-        return instance.isoformat()
-
-    @override
-    def _decode(self, source: str, annotation: TypeDef[Any] | None = None) -> dt.datetime:
-        return dt.datetime.fromisoformat(source)
-
-
-class DateSerializer(PrimitiveSerializer[dt.date, str]):
-    """Serializer for dates, as ISO 8601 text."""
-
-    @override
-    def _encode(self, instance: dt.date) -> str:
-        return instance.isoformat()
-
-    @override
-    def _decode(self, source: str, annotation: TypeDef[Any] | None = None) -> dt.date:
-        return dt.date.fromisoformat(source)
-
-
-class TimeSerializer(PrimitiveSerializer[dt.time, str]):
-    """Serializer for times, as ISO 8601 text."""
-
-    @override
-    def _encode(self, instance: dt.time) -> str:
-        return instance.isoformat()
-
-    @override
-    def _decode(self, source: str, annotation: TypeDef[Any] | None = None) -> dt.time:
-        return dt.time.fromisoformat(source)
-
-
-class TimedeltaSerializer(PrimitiveSerializer[dt.timedelta, float]):
-    """Serializer for durations, as a number of seconds."""
-
-    @override
-    def _encode(self, instance: dt.timedelta) -> float:
-        return instance.total_seconds()
-
-    @override
-    def _decode(self, source: float, annotation: TypeDef[Any] | None = None) -> dt.timedelta:
-        return dt.timedelta(seconds=source)
-
-
-class ComplexSerializer(PrimitiveSerializer[complex, list[float]]):
-    """Serializer for complex numbers, as a two-element ``[real, imaginary]`` list."""
-
-    @override
-    def _encode(self, instance: complex) -> list[float]:
-        return [instance.real, instance.imag]
-
-    @override
-    def _decode(self, source: list[float], annotation: TypeDef[Any] | None = None) -> complex:
-        real, imaginary = source
-
-        return complex(real, imaginary)
-
-
-class DecimalSerializer(PrimitiveSerializer[Decimal, str]):
-    """Serializer for decimals, as their exact decimal text."""
-
-    @override
-    def _encode(self, instance: Decimal) -> str:
-        return str(instance)
-
-    @override
-    def _decode(self, source: str, annotation: TypeDef[Any] | None = None) -> Decimal:
-        return Decimal(source)
-
-
-class UuidSerializer(PrimitiveSerializer[uuid.UUID, str]):
-    """Serializer for UUIDs, as their canonical text."""
-
-    @override
-    def _encode(self, instance: uuid.UUID) -> str:
-        return str(instance)
-
-    @override
-    def _decode(self, source: str, annotation: TypeDef[Any] | None = None) -> uuid.UUID:
-        return uuid.UUID(source)
-
-
-class PathSerializer(PrimitiveSerializer[Path, str]):
-    """Serializer for filesystem paths, as text."""
-
-    @override
-    def _encode(self, instance: Path) -> str:
-        return str(instance)
-
-    @override
-    def _decode(self, source: str, annotation: TypeDef[Any] | None = None) -> Path:
-        return Path(source)
-
-
-class BytesSerializer(PrimitiveSerializer[bytes, str]):
-    """Serializer for binary data, as base64 text."""
-
-    @override
-    def _encode(self, instance: bytes) -> str:
-        return base64.b64encode(instance).decode("ascii")
-
-    @override
-    def _decode(self, source: str, annotation: TypeDef[Any] | None = None) -> bytes:
-        return base64.b64decode(source.encode("ascii"))
-
-
-class EnumSerializer(PrimitiveSerializer[Enum, JSONScalar]):
-    """Serializer for enum members, as their value."""
-
-    @override
-    def _encode(self, instance: Enum) -> JSONScalar:
-        return cast(JSONScalar, instance.value)
-
-    @override
-    def _decode(self, source: JSONScalar, annotation: TypeDef[Any] | None = None) -> Enum:
-        if annotation is None:
-            raise ValueError("Deserializing an enum requires the enum class as annotation.")
-
-        enum_type = TypeRef(annotation).concrete_type
-
-        if not (isinstance(enum_type, type) and issubclass(enum_type, Enum)):
-            raise TypeError(f"{annotation!r} is not an enum type.")
-
-        return enum_type(source)
+# def scalar_to_json(scalar: Scalar) -> JSONValue:  # noqa: C901
+#     """Convert a scalar to a JSON-supported value, or a JSON-shaped dictionary."""
+#     match scalar:
+#         case str() | int() | float() | bool() | None:
+#             return scalar
+#         case Decimal():
+#             return {"$dec": str(scalar)}
+#         case Fraction():
+#             return {"$frac": [scalar.numerator, scalar.denominator]}
+#         case complex():
+#             return {"$complex": [scalar.real, scalar.imag]}
+#         case bytes():
+#             return {"$bytes": base64.b64encode(bytes(scalar)).decode("ascii")}
+#         case bytearray():
+#             return {"$bytearray": base64.b64encode(bytes(scalar)).decode("ascii")}
+#         case dt.datetime():
+#             return {"$dt": scalar.isoformat()}
+#         case dt.date():
+#             return {"$date": scalar.isoformat()}
+#         case dt.time():
+#             return {"$time": scalar.isoformat()}
+#         case dt.timedelta():
+#             return {"$timedelta": scalar.total_seconds()}
+#         case uuid.UUID():
+#             return {"$uuid": str(scalar)}
+#         case Path():
+#             return {"$path": str(scalar)}
 
 
 # Registration
@@ -1494,16 +1195,6 @@ for _serializer in (
     _sql_serializer,
     _image_serializer,
     _html_serializer,
-    DateTimeSerializer,
-    DateSerializer,
-    TimeSerializer,
-    TimedeltaSerializer,
-    ComplexSerializer,
-    DecimalSerializer,
-    UuidSerializer,
-    PathSerializer,
-    BytesSerializer,
-    EnumSerializer,
     ContainerSerializer,
     PickleSerializer,
 ):
