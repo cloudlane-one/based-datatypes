@@ -225,6 +225,9 @@ class ConversionEdge[S, T, R: OpenReach, I: FullIntegrity]:
 
 
 _type_dag = rx.PyDAG[TypeDef[Any]]()
+"""DAG representing the hierarchy between abstract types known to the conversion system.
+Every edge defines a direct or indirect subtype relationship (``is_subtype(src, tgt) is True``).
+"""
 
 
 def _single_source_distances(g: rx.PyDiGraph, source: int) -> np.ndarray:
@@ -261,6 +264,7 @@ class ConversionNode:
 
 
 _conversion_graph: rx.PyDiGraph[ConversionNode, ConversionEdge] = rx.PyDiGraph()
+"""A directed graph representing the conversion paths between types."""
 
 
 @dataclass(frozen=True)
@@ -381,6 +385,14 @@ def _add_converter_to_graph(
     src_node: ConversionNode | None,
     tgt_node: ConversionNode | None,
 ) -> None:
+    """Add a converter to the conversion graph and update the type DAG if necessary.
+
+    The converter is added as an edge to **all** matching source and target nodes in the graph,
+    meaning any node, whose type is a supertype of the converter's declared type.
+
+    Additionally, if the converter's source or target type is not already present in the graph,
+    a new node is created for that type and added to the graph.
+    """
     raise NotImplementedError("Adding converter to graph not implemented yet.")
 
 
